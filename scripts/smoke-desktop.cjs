@@ -16,8 +16,20 @@ app.on('browser-window-created', (_event, window) => {
         const until = async fn => { for(let i=0;i<120;i++){if(fn())return;await tick();}throw new Error('UI state timeout'); };
         if (!window.miswitch) throw new Error('Preload bridge missing');
         await until(() => document.querySelector('header .primary') && !document.querySelector('header .primary').disabled);
+        // Adding starts at the preset picker: search, apply a preset, then start over from a custom form.
         document.querySelector('header .primary').click();
-        await until(() => document.querySelector('dialog[open]'));
+        await until(() => document.querySelector('dialog[open] .preset-row'));
+        const search = document.querySelector('dialog[open] input[type=search]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(search, '深度求索'); search.dispatchEvent(new Event('input', { bubbles: true }));
+        await until(() => document.querySelectorAll('dialog[open] .preset-row:not(.custom)').length === 1);
+        document.querySelector('dialog[open] .preset-row:not(.custom)').click();
+        await until(() => document.querySelector('input[name=baseUrl]'));
+        const preset = { url: document.querySelector('input[name=baseUrl]').value, haiku: document.querySelector('input[name=smallFastModel]').value, link: !!document.querySelector('.field-head a[href*="deepseek"]') };
+        if (preset.url !== 'https://api.deepseek.com/anthropic' || preset.haiku !== 'deepseek-flash' || !preset.link) throw new Error('Preset not applied: ' + JSON.stringify(preset));
+        [...document.querySelectorAll('.preset-bar button')].find(b => b.textContent === '更换预设').click();
+        await until(() => document.querySelector('dialog[open] .preset-row.custom'));
+        document.querySelector('dialog[open] .preset-row.custom').click();
+        await until(() => document.querySelector('input[name=name]'));
         document.querySelector('input[name=name]').value = 'Smoke Claude';
         document.querySelector('input[name=model]').value = 'smoke-model';
         document.querySelector('input[name=apiKey]').value = 'sk-smoke-only';
@@ -28,7 +40,9 @@ app.on('browser-window-created', (_event, window) => {
         await until(() => document.querySelector('.badge.green'));
         // Validation messages from the main process must reach the form (static Zod custom issues only).
         document.querySelector('header .primary').click();
-        await until(() => document.querySelector('dialog[open]'));
+        await until(() => document.querySelector('dialog[open] .preset-row.custom'));
+        document.querySelector('dialog[open] .preset-row.custom').click();
+        await until(() => document.querySelector('input[name=name]'));
         document.querySelector('input[name=name]').value = 'Bad URL';
         document.querySelector('input[name=model]').value = 'm';
         document.querySelector('input[name=apiKey]').value = 'sk-smoke-two';
@@ -102,7 +116,7 @@ app.on('browser-window-created', (_event, window) => {
         const restored=await window.miswitch.snapshot();
         if(restored.active.claude) throw new Error('Restore kept active marker');
       })()`);
-      console.log('Desktop smoke passed: real preload IPC, React form save, small/fast model, validation message, draft persistence, edited badge, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
+      console.log('Desktop smoke passed: real preload IPC, preset picker, React form save, small/fast model, validation message, draft persistence, edited badge, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
       clearTimeout(timeout);
       window.destroy();
       // Electron may still have cache handles open; test data is synthetic and safe to clean up.

@@ -10,6 +10,8 @@ import { Manager } from '../src/core/manager';
 import { resolvePaths } from '../src/core/paths';
 import { readText } from '../src/core/files';
 import { fetchModelList, modelIds, modelListUrls } from '../src/core/models';
+import { presetLinks, presetMatches, presets, presetsFor } from '../src/core/presets';
+import { providerSchema, type AppId } from '../src/core/types';
 
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'miswitch-editor-')));
@@ -17,6 +19,27 @@ async function fixture() {
   const put = async (path: string, value: string) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, value); };
   return { paths, manager: new Manager(paths, {}), put, cleanup: () => rm(root, { recursive: true, force: true }) };
 }
+
+test('every preset is a valid provider for each app it lists, without affiliate links', () => {
+  assert.ok(presets.length >= 15 && presets.length <= 25);
+  assert.equal(new Set(presets.map(p => p.id)).size, presets.length);
+  for (const preset of presets) {
+    for (const [app, fields] of Object.entries(preset.apps) as [AppId, NonNullable<typeof preset.apps.claude>][]) {
+      const parsed = providerSchema.safeParse({ app, name: preset.name, apiKey: fields.mode === 'api' ? 'sk-test-only' : undefined, ...fields, model: fields.model ?? 'model-from-list' });
+      assert.ok(parsed.success, `${preset.id}/${app}: ${parsed.success ? '' : JSON.stringify(parsed.error.issues)}`);
+      if (app === 'chatgpt') assert.equal(fields.protocol, 'openai-responses');
+      if (app === 'claude' && fields.mode === 'api' && preset.category !== 'official') assert.equal(fields.claudeAuth, 'bearer', preset.id);
+    }
+  }
+  for (const link of presetLinks) {
+    assert.match(link, /^https:\/\//);
+    assert.doesNotMatch(link, /[?&](aff|ic|track_id|utm_[a-z]+|ac|rc)=|\/i\//, link);
+  }
+  assert.ok(presetsFor('claude').length > presetsFor('chatgpt').length - 5);
+  const find = (query: string) => presets.filter(p => presetMatches(p, query)).map(p => p.id);
+  assert.ok(find('深度求索').includes('deepseek')); assert.ok(find('bigmodel').includes('zhipu')); assert.ok(find('openrouter.ai').includes('openrouter'));
+  assert.deepEqual(find('no such vendor'), []);
+});
 
 test('Claude alias routes are written and cleared; Codex reasoning effort is a one-time default that never drifts', async () => {
   const f = await fixture();

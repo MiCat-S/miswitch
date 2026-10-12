@@ -1,10 +1,11 @@
-import { app, BrowserWindow, ipcMain, net } from 'electron';
+import { app, BrowserWindow, ipcMain, net, shell } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Manager } from '../core/manager';
 import { resolvePaths } from '../core/paths';
 import { publicError } from '../core/errors';
+import { presetLinks } from '../core/presets';
 import type { AppId, ModelListRequest, ProviderInput } from '../core/types';
 
 // Development-only isolation for smoke tests. Packaged builds ignore this override.
@@ -42,7 +43,8 @@ else {
     }
     const createWindow = () => {
       window = new BrowserWindow({ width: 1140, height: 820, minWidth: 840, minHeight: 600, title: 'MiSwitch', backgroundColor: '#f6f7fb', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
-      window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+      // Only the vendor pages listed in the presets open, and only in the system browser.
+      window.webContents.setWindowOpenHandler(({ url }) => { if (presetLinks.has(url)) void shell.openExternal(url); return { action: 'deny' }; });
       window.webContents.on('will-navigate', event => event.preventDefault());
       window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
       window.on('closed', () => { window = undefined; });

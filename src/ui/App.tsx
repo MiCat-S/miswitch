@@ -1,74 +1,17 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import type { AppId, Bridge, ProviderInput, PublicProvider, Snapshot } from '../core/types';
+import { useEffect, useState } from 'react';
+import type { AppId, Bridge, PublicProvider, Snapshot } from '../core/types';
+import { Modal, errorText, initials, names, subtitles } from './common';
+import { ProviderEditor } from './ProviderEditor';
 declare global { interface Window { miswitch?: Bridge } }
-const names: Record<AppId, string> = { claude: 'Claude', chatgpt: 'ChatGPT', pi: 'Pi' };
-const subtitles: Record<AppId, string> = { claude: 'Claude Code', chatgpt: 'OpenAI Codex CLI', pi: 'Pi Coding Agent' };
-const initials: Record<AppId, string> = { claude: 'C', chatgpt: '◎', pi: 'π' };
-// The main process only rejects with static messages (publicError); Electron prefixes them with the channel name.
-const errorText = (e: unknown) => e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : '操作失败';
 
-function Modal({ title, onClose, children }: { title: string; onClose(): void; children: ReactNode }) {
-  const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => { ref.current?.showModal(); }, []);
-  return <dialog ref={ref} onCancel={event => { event.preventDefault(); onClose(); }} aria-labelledby="modal-title">
-    <div className="dialog-head"><h2 id="modal-title">{title}</h2><button className="icon-button" aria-label="关闭弹窗" onClick={onClose}>×</button></div>{children}
-  </dialog>;
-}
-function ProviderEditor({ app, provider, busy, error, onClose, onSave }: { app: AppId; provider?: PublicProvider; busy: boolean; error: string; onClose(): void; onSave(input: ProviderInput): void }) {
-  const [mode, setMode] = useState<'api' | 'login'>(provider?.mode ?? 'api');
-  const submit = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    onSave({ id: provider?.id, app, name: String(data.get('name')), mode,
-      baseUrl: String(data.get('baseUrl') ?? ''), model: String(data.get('model')),
-      protocol: String(data.get('protocol') ?? (app === 'claude' ? 'anthropic-messages' : 'openai-responses')) as ProviderInput['protocol'],
-      claudeAuth: String(data.get('claudeAuth') ?? 'api-key') as 'api-key' | 'bearer',
-      loginProvider: String(data.get('loginProvider') ?? 'anthropic'),
-      notes: String(data.get('notes')), apiKey: String(data.get('apiKey') ?? '') || undefined,
-      smallFastModel: String(data.get('smallFastModel') ?? '').trim() || undefined,
-      contextWindow: Number(data.get('contextWindow')) || undefined, autoCompactTokenLimit: Number(data.get('autoCompactTokenLimit')) || undefined });
-  };
-  return <Modal title={`${provider ? '编辑' : '添加'} ${names[app]} 配置`} onClose={() => { if (!busy) onClose(); }}>
-    <form onSubmit={submit}><fieldset disabled={busy}>
-      <label>配置名称<input name="name" autoFocus required maxLength={100} defaultValue={provider?.name} placeholder="例如：官方直连 / 工作网关" /></label>
-      <label>连接方式<select value={mode} onChange={e => setMode(e.target.value as 'api' | 'login')}><option value="api">API Key / 自定义端点</option><option value="login">{app === 'pi' ? '沿用 Pi 已有的 Provider' : '使用已有官方登录'}</option></select></label>
-      {/* API fields stay mounted while in login mode so an unsaved draft survives switching back.
-          A disabled fieldset is excluded from validation and FormData, so login saves carry no key. */}
-      <fieldset hidden={mode !== 'api'} disabled={mode !== 'api'} aria-hidden={mode !== 'api'}>
-        <label>Base URL<input name="baseUrl" type="url" required defaultValue={provider?.baseUrl || (app === 'claude' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1')} placeholder="https://… ；仅本机地址可用 http://" /></label>
-        <label>API Key<input name="apiKey" type="password" autoComplete="new-password" required={!provider?.hasKey} placeholder={provider?.hasKey ? '已保存；留空保留原密钥' : '输入 API Key'} /></label>
-        <label>API 协议<select name="protocol" defaultValue={provider?.protocol ?? (app === 'claude' ? 'anthropic-messages' : 'openai-responses')}>
-          {app !== 'chatgpt' ? <option value="anthropic-messages">Anthropic Messages</option> : null}
-          {app !== 'claude' ? <option value="openai-responses">OpenAI Responses</option> : null}
-          {app === 'pi' ? <option value="openai-completions">OpenAI Chat Completions</option> : null}
-        </select></label>
-        {app === 'claude' ? <label>鉴权头<select name="claudeAuth" defaultValue={provider?.claudeAuth}><option value="api-key">X-Api-Key（官方 API）</option><option value="bearer">Authorization: Bearer（网关）</option></select></label> : null}
-        {app === 'pi' ? <p className="hint">Pi 使用 Anthropic Messages 时会自行追加 /v1/messages，Base URL 请不要带 /v1；OpenAI 协议则需要带 /v1。</p> : null}
-      </fieldset>
-      {mode === 'login' ? <p className="hint">{app === 'pi' ? '只切换 Pi 的默认 Provider 与模型，不改动该 Provider 本身（/login 保存的登录、auth.json 中的密钥或 models.json 中的定义）。' : '保留现有登录凭据。请先在目标 CLI 中登录，再用该配置恢复官方路由。'}保存此模式后，已保存的 API Key 会被移除。</p> : null}
-      {mode === 'login' && app === 'pi' ? <label>Pi Provider ID<input name="loginProvider" required defaultValue={provider?.loginProvider ?? 'anthropic'} placeholder="pi /login 保存的，或 models.json 中定义的 Provider ID" /></label> : null}
-      <label>默认 Model<input name="model" required maxLength={200} defaultValue={provider?.model} placeholder="输入供应商支持的精确模型 ID" /></label>
-      {app === 'claude' ? <fieldset hidden={mode !== 'api'} disabled={mode !== 'api'} aria-hidden={mode !== 'api'}>
-        <label>小型／快速模型（可选）<input name="smallFastModel" maxLength={200} defaultValue={provider?.smallFastModel} placeholder="写入 ANTHROPIC_DEFAULT_HAIKU_MODEL" /></label>
-        <p className="hint">Claude Code 的后台任务和 haiku 别名使用该模型；留空时请求 Anthropic 默认的 Haiku 模型 ID，网关没有该模型时请填写。</p>
-      </fieldset> : null}
-      {app === 'chatgpt' ? <div className="pair">
-        <label>上下文窗口（可选）<input name="contextWindow" type="number" min={1} step={1} defaultValue={provider?.contextWindow} placeholder="model_context_window，如 1000000" /></label>
-        <label>自动压缩阈值（可选）<input name="autoCompactTokenLimit" type="number" min={1} step={1} defaultValue={provider?.autoCompactTokenLimit} placeholder="model_auto_compact_token_limit" /></label>
-      </div> : null}
-      <label>备注<textarea name="notes" rows={2} maxLength={2000} defaultValue={provider?.notes} /></label>
-      <p className="hint">数据仅保存在本机，使用明文文件。请勿把配置目录加入版本控制或公开同步。</p>
-      {error ? <p role="alert" className="error">{error}</p> : null}
-      <div className="dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="submit">{busy ? '保存中…' : '保存配置'}</button></div>
-    </fieldset></form>
-  </Modal>;
-}
+const aliases = (p: PublicProvider) => ([['Haiku', p.smallFastModel], ['Sonnet', p.sonnetModel], ['Opus', p.opusModel], ['Fable', p.fableModel]] as const)
+  .filter(([, model]) => model).map(([alias, model]) => `${alias} → ${model}`).join('，');
 function ProviderCard({ p, selected, drift, edited, busy, onActivate, onEdit, onRemove }: { p: PublicProvider; selected: boolean; drift: boolean; edited: boolean; busy: boolean; onActivate(): void; onEdit(): void; onRemove(): void }) {
   const current = selected && !drift && !edited;
   return <article className={`provider-card ${selected ? 'selected' : ''}`}>
     <div className="card-top"><span className={`app-icon ${p.app}`}>{initials[p.app]}</span><span className={`badge ${current ? 'green' : ''}`}>{selected ? drift ? '管理字段已变更' : edited ? '已编辑，待重新写入' : '当前写入' : p.mode === 'api' ? 'API' : p.app === 'pi' ? '已有 Provider' : '官方登录'}</span></div>
     <h2>{p.name}</h2><p className="endpoint">{p.mode === 'api' ? p.baseUrl : p.app === 'pi' ? `沿用 Pi Provider：${p.loginProvider}` : '使用 CLI 已有登录凭据'}</p>
-    <dl><div><dt>Model</dt><dd>{p.model}</dd></div>{p.smallFastModel ? <div><dt>小型／快速模型</dt><dd>{p.smallFastModel}</dd></div> : null}<div><dt>鉴权</dt><dd>{p.mode === 'login' ? '由 CLI 管理，未验证' : p.hasKey ? '••••••••' : '未设置'}</dd></div></dl>
+    <dl><div><dt>Model</dt><dd>{p.model}</dd></div>{aliases(p) ? <div><dt>别名映射</dt><dd>{aliases(p)}</dd></div> : null}{p.reasoningEffort ? <div><dt>推理强度</dt><dd>{p.reasoningEffort}</dd></div> : null}<div><dt>鉴权</dt><dd>{p.mode === 'login' ? '由 CLI 管理，未验证' : p.hasKey ? '••••••••' : '未设置'}</dd></div></dl>
     <p className="notes">{p.notes || '暂无备注'}</p>
     <div className="card-actions"><button className={current ? '' : 'primary'} disabled={busy} onClick={onActivate}>{selected && !drift ? '重新写入' : '启用配置'}</button><button disabled={busy} onClick={onEdit}>编辑</button><button className="danger-text" disabled={busy || selected} onClick={onRemove}>删除</button></div>
   </article>;
@@ -128,7 +71,7 @@ export function App() {
       <section className="backup-panel"><div className="section-heading"><h2>历史备份 <span>{backups.length}</span></h2><span>每个应用保留最近 10 次</span></div>{backups.length === 0 ? <p className="hint">第一次切换后，原配置会出现在这里。</p> : backups.map(b => <div className="backup-row" key={b.id}><div><strong>{new Date(b.createdAt).toLocaleString()}</strong><small>{b.files.join(' · ')}</small></div><button disabled={blocked} onClick={() => setConfirmation({ title: '恢复历史备份', body: '恢复将覆盖当前应用配置，并先备份当前文件；恢复后重新检测状态。', execute: () => void act(() => bridge!.restore(b.id), '历史配置已恢复；当前标记已清除，请在目标 CLI 中验证。') })}>恢复</button></div>)}</section>
       <footer>MiSwitch · 本机明文存储 · Claude Code / Codex CLI / Pi Coding Agent</footer>
     </main>
-    {editor ? <ProviderEditor key={editor.provider?.id ?? app} app={app} provider={editor.provider} busy={busy} error={error} onClose={() => { setEditor(undefined); setError(''); }} onSave={input => void act(() => bridge!.save(input), next => !input.id || input.id !== selected ? '配置已保存；点击启用配置后写入目标工具。'
+    {editor ? <ProviderEditor key={editor.provider?.id ?? app} app={app} provider={editor.provider} busy={busy} error={error} listModels={request => bridge!.listModels(request)} onClose={() => { setEditor(undefined); setError(''); }} onSave={input => void act(() => bridge!.save(input), next => !input.id || input.id !== selected ? '配置已保存；点击启用配置后写入目标工具。'
       : next.diagnostics.find(d => d.app === input.app)?.edited ? '配置已保存；目标工具仍使用编辑前的设置，点击重新写入后生效。' : '配置已保存；写入目标工具的字段没有变化。', true)} /> : null}
     {confirmation ? <Modal title={confirmation.title} onClose={() => { if (!busy) { setConfirmation(undefined); setError(''); } }}><p>{confirmation.body}</p>{error ? <p role="alert" className="error">{error}</p> : null}<div className="dialog-actions"><button disabled={busy} onClick={() => { setConfirmation(undefined); setError(''); }}>取消</button><button disabled={busy} className="primary" onClick={confirmation.execute}>{busy ? '处理中…' : '确认'}</button></div></Modal> : null}
   </div>;

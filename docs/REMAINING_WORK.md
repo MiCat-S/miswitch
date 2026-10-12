@@ -8,7 +8,7 @@
 
 ## 核心小項
 
-- [ ] Claude 只提供 haiku 路由欄位；`/model opus`、子代理 `model: sonnet` 等別名仍請求 Anthropic 預設 ID。cc-switch 提供 haiku／sonnet／opus／fable 四個欄位，若網關使用者會用這些別名再補。
+- [ ] 預設清單的模型 ID 取自 cc-switch 2026-10-12 的 `main`，會隨供應商更新而過時；需要定期對照更新，或改為只保留端點、模型一律由「獲取模型列表」取得。
 - [ ] `proper-lockfile` 的鎖目錄（`settings.json.lock/`、`config.toml.lock/`）會出現在 CLI 設定目錄中，無害但可見；可評估改放到 MiSwitch 自己的 store 目錄（需保留 Pi `auth.json` 與官方相同的鎖約定）。
 - [ ] `@iarna/toml` 自 2020 年未維護，僅支援 TOML 0.5；若 Codex 日後在 `config.toml` 使用 TOML 1.0 特性會解析失敗。可評估換 `smol-toml`，換前需用本機實際 `config.toml` 做往返測試。
 - [ ] 唯讀目標仍可透過 rename 被覆寫為 0600。文件已記錄不保留既有 mode／ACL；發布前決定是否尊重既有檔案權限。

@@ -182,6 +182,34 @@ textarea { resize: vertical; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 22px; flex-wrap: wrap; }
 dialog > p { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+dialog.wide { width: 560px; }
+.field { display: grid; gap: 7px; margin-bottom: 14px; }
+.field-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.field-head label, .field-head legend { display: inline; margin: 0; padding: 0; font-size: 12px; font-weight: 600; }
+.field-head a, .link-button { font-size: 12px; font-weight: 600; color: var(--accent-text); text-decoration: none; }
+.link-button { border: 0; background: none; padding: 2px 0; }
+.link-button:hover { background: none; text-decoration: underline; }
+.field-head a:hover { text-decoration: underline; }
+.field > .hint, .field > .error { margin: 0; }
+.key-input { display: flex; gap: 8px; }
+.key-input input { flex: 1; min-width: 0; }
+.key-input button { padding: 0 12px; font-size: 12px; }
+fieldset.aliases { border-top: 1px solid var(--line-soft); padding-top: 14px; margin-bottom: 4px; }
+fieldset.aliases .field-head { margin-bottom: 10px; }
+fieldset.aliases .hint { margin-top: 0; }
+.preset-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; background: var(--accent-soft); border-radius: 8px; padding: 9px 12px; margin-bottom: 16px; font-size: 12px; color: var(--info-text); }
+.preset-bar span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.preset-bar a { color: var(--accent-text); font-weight: 600; text-decoration: none; }
+.preset-bar button { padding: 5px 10px; font-size: 12px; }
+.preset-picker > input { margin-bottom: 12px; }
+.preset-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.preset-tabs button { padding: 5px 11px; font-size: 12px; border-radius: 999px; }
+.preset-tabs button.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+.preset-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; max-height: 52vh; overflow-y: auto; }
+.preset-row { width: 100%; display: grid; gap: 3px; text-align: left; padding: 11px 12px; white-space: normal; }
+.preset-row strong { font-size: 13px; color: var(--text); overflow-wrap: anywhere; }
+.preset-row small { font-size: 11px; font-weight: 500; color: var(--text-3); overflow-wrap: anywhere; }
+.preset-row.custom { border-style: dashed; }
 
 /* ---------- responsive: covers 200 % zoom of the 840 px minimum window (420 px CSS viewport) ---------- */
 @media (max-width: 960px) {

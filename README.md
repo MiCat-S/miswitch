@@ -39,7 +39,9 @@ macOS 安装包为 Apple Silicon（arm64）dmg，使用 ad-hoc 签名，没有 D
 
 Claude Code 使用 Anthropic Messages；Codex 使用 Responses；Pi 可选择 Anthropic Messages、OpenAI Responses 或 Chat Completions。仅有“OpenAI 兼容”描述不代表端点适合所有应用。
 
-Claude Code 的后台任务和 haiku 别名默认请求 Anthropic 的 Haiku 模型 ID；网关没有该模型时，在配置里填写“小型／快速模型”（写入 `ANTHROPIC_DEFAULT_HAIKU_MODEL`）。
+添加配置时先选预设：内置约 20 个常用供应商（Anthropic / OpenAI 官方、DeepSeek、Kimi、智谱、MiniMax、通义千问、火山方舟、OpenRouter 等），自动填好 Base URL、协议与模型，并提供官网和“获取 API Key”链接；预设数据改编自 cc-switch（MIT，见 `THIRD_PARTY_NOTICES.md`）。表单可显示/隐藏 API Key，可从供应商的 `/v1/models` 获取模型列表。
+
+Claude Code 的后台任务和 haiku／sonnet／opus／fable 别名默认请求 Anthropic 的模型 ID；网关没有这些模型时，在“模型别名映射”中填写（写入 `ANTHROPIC_DEFAULT_*_MODEL`），或点“全部填为默认 Model”。Codex 可选推理强度（`model_reasoning_effort`），只在切换时写入。
 
 “官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Pi 的对应模式是“沿用 Pi 已有的 Provider”：只切换 `defaultProvider` 与 `defaultModel`，不改动该 Provider 本身（`/login` 保存的登录、`auth.json` 中的密钥或 `models.json` 中的定义）。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
 

@@ -12,7 +12,7 @@ Claude Desktop 的消费者聊天及 ChatGPT 消费者聊天没有在本方案�
 
 ### 1.2 技术选型
 
-采用 Electron + React + TypeScript：文件读写、锁、备份和验证集中在主进程；renderer 只处理 UI；sandbox preload 暴露五个受限方法。选择这套方案是为了复用 Node 的文件系统能力，并让 Fable 能在同一种语言中审查核心逻辑。
+采用 Electron + React + TypeScript：文件读写、锁、备份和验证集中在主进程；renderer 只处理 UI；sandbox preload 只暴露固定的几个受限方法（见下方 Bridge）。选择这套方案是为了复用 Node 的文件系统能力，并让 Fable 能在同一种语言中审查核心逻辑。
 
 Electron 安装体积会大于 Tauri；若安装体积成为首要目标，可将同一 Adapter / Transaction 设计移植到 Tauri Rust 后端。当前交付已经包含可运行的 Electron 桌面应用，而不是只有一个浏览器演示。
 
@@ -117,7 +117,8 @@ scripts/
 | `claudeAuth` | `api-key / bearer` | Anthropic 官方 API 与 Bearer 网关区分 |
 | `loginProvider` | Pi 登录模式使用 | Pi 中已有的 Provider ID：`auth.json` 中的条目（OAuth 或 API Key）或 `models.json` 中定义的 Provider |
 | `notes` | 最大 2000 字符 | 用户备注 |
-| `smallFastModel` | 可选，最大 200 字符，仅 Claude API 模式 | 写入 `ANTHROPIC_DEFAULT_HAIKU_MODEL`：haiku 别名与后台任务使用的模型 |
+| `smallFastModel` / `sonnetModel` / `opusModel` / `fableModel` | 可选，最大 200 字符，仅 Claude API 模式 | 写入 `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS,FABLE}_MODEL`；haiku 路由同时是后台任务使用的模型。留空不写，切换时一律先清除 |
+| `reasoningEffort` | 可选，`minimal / low / medium / high / xhigh`，仅 Codex | 设置时写入 `model_reasoning_effort`；不清除、不计入漂移判定，Codex 自己改写它属于用户选择 |
 | `contextWindow` / `autoCompactTokenLimit` | 可选正整数，仅 Codex | 写入 `model_context_window` / `model_auto_compact_token_limit` |
 | `updatedAt` / `appliedAt` | UTC ISO8601 | UI 按用户本地时区显示 |
 | `imported` | 应用 → UTC ISO8601，可选 | 各应用本机配置的自动导入时间；有记录的应用不再自动导入 |
@@ -126,7 +127,7 @@ scripts/
 | `active.*.hashes` | 路径 → SHA-256 | 上次写入的精确字节；仅用于提示“文件已被重排” |
 | `active.*.definition` | SHA-256，可选 | 写入时该应用与模式下会进入目标文件的 Provider 字段；与当前 Provider 不同即“写入后已编辑” |
 
-向前端返回 `PublicProvider` 时剔除 `apiKey`，只返回 `hasKey`；`active` 只返回 `providerId` 与 `appliedAt`，各种摘要留在主进程。编辑框留空保留旧密钥；已保存的密钥不会自动填回 renderer。编辑当前 Provider 不写目标文件，也不清除 `active` 记录：目标文件里仍是它写入的设置，所以它仍然不能删除，必须先切换到另一组。状态检测比较 `definition` 与当前 Provider，有差异时界面显示“已编辑，待重新写入”，改回原值后提示自动消失。`definition` 只投影该应用与模式下 Adapter 实际写入的字段：Claude 为模型，API 模式另加 Base URL、密钥、鉴权头与小型／快速模型；Codex 为模型与两个上下文键，API 模式另加名称、Base URL 与密钥；Pi 为模型，API 模式另加 Provider ID、Base URL、协议与密钥，登录模式另加登录 Provider ID。因此只改备注、名称（Codex API 模式除外）或当前模式不使用的字段都不算编辑。`37e2673` 写入的记录没有 `definition`，那时编辑会清除记录，所以现存记录对应的必然是未编辑的 Provider，第一次编辑时用编辑前的 Provider 按记录自己的规则集补写。
+向前端返回 `PublicProvider` 时剔除 `apiKey`，只返回 `hasKey`；`active` 只返回 `providerId` 与 `appliedAt`，各种摘要留在主进程。编辑框留空保留旧密钥；已保存的密钥不会自动填回 renderer。编辑当前 Provider 不写目标文件，也不清除 `active` 记录：目标文件里仍是它写入的设置，所以它仍然不能删除，必须先切换到另一组。状态检测比较 `definition` 与当前 Provider，有差异时界面显示“已编辑，待重新写入”，改回原值后提示自动消失。`definition` 只投影该应用与模式下 Adapter 实际写入的字段：Claude 为模型，API 模式另加 Base URL、密钥、鉴权头与四个别名路由；Codex 为模型、两个上下文键与推理强度，API 模式另加名称、Base URL 与密钥；Pi 为模型，API 模式另加 Provider ID、Base URL、协议与密钥，登录模式另加登录 Provider ID。因此只改备注、名称（Codex API 模式除外）或当前模式不使用的字段都不算编辑。`37e2673` 写入的记录没有 `definition`，那时编辑会清除记录，所以现存记录对应的必然是未编辑的 Provider，第一次编辑时用编辑前的 Provider 按记录自己的规则集补写。
 
 **规则集。** 管理字段的范围可能随版本扩大（规则集 2 新增清理 fable 与旧 small/fast 路由，并改用上述投影）。每条 `active` 记录保存自己的 `rules`，状态检测与编辑判定都按该规则集计算，所以单纯升级不会把未改动的文件报成外部修改。旧规则集记录若在文件中仍有新规则集会清理的键，诊断提示“重新写入后按新规则清理”；重新启用后记录改用当前规则集。
 
@@ -134,13 +135,13 @@ scripts/
 
 | 应用 | 导入规则 |
 | --- | --- |
-| Claude Code | `env` 有 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` 时为 API 模式（Base URL 缺省为官方地址，`AUTH_TOKEN` 对应 Bearer，haiku 或旧 small/fast 路由对应小型／快速模型）；否则为官方登录。模型取 `ANTHROPIC_MODEL` 或 `model`，都没有时用 Claude Code 的 `default` 别名。有 `apiKeyHelper` 或 Bedrock / Vertex / Foundry 开关时不导入 |
+| Claude Code | `env` 有 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` 时为 API 模式（Base URL 缺省为官方地址，`AUTH_TOKEN` 对应 Bearer，haiku 或旧 small/fast 路由对应小型／快速模型，sonnet / opus / fable 路由一并导入）；否则为官方登录。模型取 `ANTHROPIC_MODEL` 或 `model`，都没有时用 Claude Code 的 `default` 别名。有 `apiKeyHelper` 或 Bedrock / Vertex / Foundry 开关时不导入 |
 | Codex | 有 `model_provider` 时，对应表须有字面 `base_url` 与 `experimental_bearer_token`，且 `wire_api` 为 Responses，名称取表的 `name`；没有 `model_provider` 时为官方登录。上下文键一并导入。未设置 `model`、使用 `env_key` 或其他协议时不导入 |
 | Pi | `settings.json` 的 `defaultProvider` 与 `defaultModel` 导入为“沿用已有 Provider”，名称取 `models.json` 中的 `name`；本工具自己的 `miswitch_*` 条目不导入 |
 
 导入结果先在内存中用 `patchProvider()` 写回一次：若管理字段指纹与当前文件相同，说明重新写入不会改变任何管理字段，直接记为当前 `active`（`hashes` 为当前原文）；否则只导入不标记。待决日志存在时不导入。
 
-**降级边界。** 旧版本的 Provider Schema 是 strict 的：保存过 `smallFastModel` 的 Hub 无法被 `722c119` 之前的版本打开（只读拒绝，不会覆写）。降级前先备份整个 store，再从 `hub.json` 删除该字段。`active.*.rules`、备份的 `info.sequence` 不影响旧版本读取。
+**降级边界。** 旧版本的 Provider Schema 是 strict 的：保存过别名路由或 `reasoningEffort` 的 Hub 无法被不认识这些字段的旧版本打开（`smallFastModel` 从 `7090784`、其余从本次加入）（只读拒绝，不会覆写）。降级前先备份整个 store，再从 `hub.json` 删除这些字段。`active.*.rules`、备份的 `info.sequence` 不影响旧版本读取。
 
 备份 Schema：
 
@@ -208,7 +209,7 @@ API 模式示例：
 
 选择 Bearer 鉴权时写 `ANTHROPIC_AUTH_TOKEN`，不会同时留下 `ANTHROPIC_API_KEY`。切换时清除用户文件中的冲突键：旧 API Key、Bearer、Base URL、模型和各别名的模型路由（haiku / sonnet / opus / fable，以及 haiku 的旧名 `ANTHROPIC_SMALL_FAST_MODEL`，与 cc-switch 相同）、Bedrock / Vertex / Foundry 开关、`CLAUDE_CODE_OAUTH_TOKEN`。`CLAUDE_CODE_SUBAGENT_MODEL` 接受别名与完整模型 ID，属于用户偏好，保留不动；明确指定的子代理模型不随切换改变。这些改动都有原文备份，其他环境变量保持原值。检测到 `apiKeyHelper` 时直接停止，避免无声删除用户的动态鉴权设置。
 
-网关通常只提供少数模型 ID。Claude Code 的后台任务和 haiku 别名走 `ANTHROPIC_DEFAULT_HAIKU_MODEL`，未设置时请求 Anthropic 默认的 Haiku ID（[模型配置](https://code.claude.com/docs/en/model-config)）。Provider 的“小型／快速模型”填写后写入该变量，并作为管理字段计入漂移判定；留空则不写。容器内用 Claude Code 2.1.296 验证：`claude -p --model haiku` 的主对话请求正是该字段的模型 ID。后台任务走同一路由的依据是官方文档与 2.1.296 可执行文件中的解析逻辑，容器测试没有动态触发后台任务。
+网关通常只提供少数模型 ID。Claude Code 的后台任务和 haiku 别名走 `ANTHROPIC_DEFAULT_HAIKU_MODEL`，未设置时请求 Anthropic 默认的 Haiku ID（[模型配置](https://code.claude.com/docs/en/model-config)）。Provider 的“模型别名映射”中 Haiku 一栏写入该变量，Sonnet / Opus / Fable 各自写入对应路由；它们都是管理字段，计入漂移判定，留空则不写。编辑器提供“全部填为默认 Model”，适合只提供一个模型的网关。容器内用 Claude Code 2.1.296 验证：`claude -p --model haiku` 的主对话请求正是该字段的模型 ID。后台任务走同一路由的依据是官方文档与 2.1.296 可执行文件中的解析逻辑，容器测试没有动态触发后台任务。
 
 登录模式保留 CLI 自己管理的登录，仅清理本文件 API 路由并设置默认模型。它不意味着登录已完成，也不读取钥匙串里的账号信息。系统环境、项目级配置、profiles / federation、gateway session 和 managed settings 仍可能有更高优先级。
 
@@ -362,7 +363,7 @@ App
  ├─ 应用导航：Claude / ChatGPT / Pi
  ├─ 本地状态：是否发现文件、hash 变化、刷新
  ├─ ProviderCard[]：当前写入 / 文件变化 / 写入后已编辑 / 重新启用
- ├─ ProviderEditor：名称、模式、URL、密钥、协议、模型、小型／快速模型（Claude）、备注
+ ├─ ProviderEditor：新增时先选预设（搜索、分类、自定义）；名称、模式、URL、密钥（可显示）、协议、模型（可获取列表）、别名映射（Claude）、上下文与推理强度（Codex）、备注
  ├─ Modal：编辑或删除 / 恢复确认
  └─ 历史备份：时间、文件、恢复动作
 ```
@@ -380,10 +381,17 @@ interface Bridge {
   remove(id: string): Promise<Snapshot>;
   activate(id: string): Promise<Snapshot>;
   restore(id: string): Promise<Snapshot>;
+  resolveJournal(id: string): Promise<Snapshot>;
+  importLive(app?: AppId): Promise<Snapshot>;
+  listModels(request: ModelListRequest): Promise<ModelList>;
 }
 ```
 
-主进程只接受本窗口、主 frame、固定本地页面来源；对所有 Provider 和 ID 再做校验。关闭 Node integration，开启 context isolation、sandbox、web security，禁止页面导航、新窗口及权限请求。CSP 禁止外部脚本、外部网络与对象加载。
+**预设。** `src/core/presets.ts` 收录约 20 个精选供应商（官方、模型厂商、聚合平台），每个按应用给出 Base URL、协议、鉴权头与模型；端点与模型 ID 改编自 cc-switch 的 MIT 预设（见 `THIRD_PARTY_NOTICES.md`），移除了推广与邀请参数，不复制图标。Codex 只收原生支持 Responses 的供应商，因为 MiSwitch 没有把 Responses 转成 Chat Completions 的代理。新增配置时先进入预设选择，选“自定义配置”即空白表单；预设只填默认值，保存时照常校验。官网与“获取 API Key”链接仅限预设列表中的地址，由主进程的 `setWindowOpenHandler` 交给系统浏览器打开，其他新窗口一律拒绝。
+
+**获取模型列表。** `listModels` 在主进程用 Electron `net.fetch`（遵循系统代理）请求供应商的模型列表：Base URL 以版本段结尾时请求 `{base}/models`，否则 `{base}/v1/models`；`/anthropic` 等兼容路径会再试去掉后缀的根路径。鉴权头与目标 CLI 一致：Claude 按所选鉴权头只发 `x-api-key` 或 Bearer，Pi 在 Anthropic 协议下两者都发，OpenAI 协议发 Bearer；Anthropic 协议另带 `anthropic-version`。Base URL 与保存时规则相同（HTTPS 或本机 HTTP）；不跟随重定向，避免密钥头被转到其他主机；10 秒超时，响应上限 4 MiB；错误只回传静态文字与 HTTP 状态码，不回显响应内容。编辑已有配置且未输入新密钥时，主进程用 Hub 中该配置的密钥，读完即释放 Hub 锁再发请求。结果填入所有模型输入框的下拉候选。
+
+主进程只接受本窗口、主 frame、固定本地页面来源；对所有 Provider 和 ID 再做校验。关闭 Node integration，开启 context isolation、sandbox、web security，禁止页面导航与权限请求；新窗口只允许以系统浏览器打开预设列表中的官网与密钥页面。CSP 禁止外部脚本、外部网络与对象加载。
 
 密钥在新建表单提交时会经 IPC 到主进程；保存后的 list/snapshot 不带密钥。错误处理集中在 `src/core/errors.ts`：核心代码只以 `PublicError` 抛出静态中文提示，Zod 校验只转发 `superRefine` 产生的 `custom` 类型消息（同样是静态字符串），其余异常（JSON/TOML 解析错误、内建 Zod 消息、文件系统错误）一律替换为固定提示，以免回显密钥或文件内容。
 
