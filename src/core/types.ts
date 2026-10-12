@@ -71,6 +71,14 @@ export type BackupInfo = { id: string; app: AppId; createdAt: string; sequence?:
 export type PendingInfo = { id: string; app: AppId | null; createdAt: string | null; paths: string[]; conflicts: string[]; valid: boolean };
 // The renderer only needs which provider is active; the hashes stay in the main process.
 export type Snapshot = { providers: PublicProvider[]; active: Partial<Record<AppId, Pick<ActiveRecord, 'providerId' | 'appliedAt'>>>; diagnostics: Diagnosis[]; backups: BackupInfo[]; pending: PendingInfo | null; warnings: string[] };
+// Fetches the provider's model IDs. An empty apiKey with providerId uses that provider's saved key.
+export const modelListRequestSchema = z.object({
+  app: appSchema, baseUrl: z.string().trim().max(2048), protocol: protocolSchema,
+  claudeAuth: z.enum(['api-key', 'bearer']).default('api-key'),
+  apiKey: z.string().max(8192).optional(), providerId: z.string().uuid().optional()
+}).strict();
+export type ModelListRequest = z.input<typeof modelListRequestSchema>;
+export type ModelList = { models: string[]; url: string };
 export interface Bridge {
   snapshot(): Promise<Snapshot>;
   save(input: ProviderInput): Promise<Snapshot>;
@@ -79,4 +87,5 @@ export interface Bridge {
   restore(id: string): Promise<Snapshot>;
   resolveJournal(id: string): Promise<Snapshot>;
   importLive(app?: AppId): Promise<Snapshot>;
+  listModels(request: ModelListRequest): Promise<ModelList>;
 }

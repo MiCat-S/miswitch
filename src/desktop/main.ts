@@ -1,11 +1,11 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, net } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Manager } from '../core/manager';
 import { resolvePaths } from '../core/paths';
 import { publicError } from '../core/errors';
-import type { AppId, ProviderInput } from '../core/types';
+import type { AppId, ModelListRequest, ProviderInput } from '../core/types';
 
 // Development-only isolation for smoke tests. Packaged builds ignore this override.
 const sandboxRoot = !app.isPackaged && process.env.MISWITCH_SANDBOX_ROOT;
@@ -29,7 +29,9 @@ else {
       snapshot: () => manager.snapshot(), save: (p: ProviderInput) => manager.save(p),
       remove: (id: string) => manager.remove(id), activate: (id: string) => manager.activate(id),
       restore: (id: string) => manager.restore(id), resolveJournal: (id: string) => manager.resolveJournal(id),
-      importLive: (app?: AppId) => manager.importLive(app)
+      importLive: (app?: AppId) => manager.importLive(app),
+      // Chromium's network stack honours the system proxy, which some vendor endpoints need.
+      listModels: (request: ModelListRequest) => manager.listModels(request, (url, init) => net.fetch(url, init))
     };
     for (const [name, handler] of Object.entries(handlers)) {
       ipcMain.handle(`miswitch:${name}`, async (event, payload: unknown) => {

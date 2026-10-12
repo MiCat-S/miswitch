@@ -6,7 +6,8 @@ import { patchProvider, claudeEnvKeys, jsonObject, asJson, managedFingerprint, p
 import { PENDING_MESSAGE, PublicError, publicError } from './errors';
 import { ARCHIVE_LIMIT, TARGET_LIMIT, atomicWrite, byteLength, ensureDirectory, hash, readText, replaceText, syncDirectory, withLocks } from './files';
 import type { Paths } from './paths';
-import { appSchema, providerSchema, type AppId, type BackupInfo, type Hub, type PendingInfo, type Provider, type ProviderInput, type Snapshot } from './types';
+import { fetchModelList } from './models';
+import { appSchema, modelListRequestSchema, providerSchema, type AppId, type ModelList, type ModelListRequest, type BackupInfo, type Hub, type PendingInfo, type Provider, type ProviderInput, type Snapshot } from './types';
 
 type Entry = { path: string; before: string | null; after: string | null };
 type Journal = { version: 1; id: string; app: AppId; createdAt: string; entries: Entry[] };
@@ -371,6 +372,16 @@ export class Manager {
       const snapshot = await this.snapshotUnlocked();
       return { ...snapshot, warnings: [...notices, ...snapshot.warnings] };
     }, true);
+  }
+  // Lists the provider's models. Without a typed key, an existing provider's saved key is used; the Hub lock is
+  // released before the network request so a slow endpoint never blocks other operations.
+  async listModels(raw: ModelListRequest, fetchImpl?: Parameters<typeof fetchModelList>[1]): Promise<ModelList> {
+    const request = modelListRequestSchema.parse(raw);
+    let apiKey = request.apiKey?.trim() || undefined;
+    if (!apiKey && request.providerId) {
+      apiKey = await this.exclusive(async () => (await this.readHub()).providers.find(p => p.id === request.providerId && p.app === request.app)?.apiKey, true);
+    }
+    return fetchModelList({ ...request, apiKey }, fetchImpl);
   }
   // Resolves a conflicting journal: files still holding our own bytes are rolled back, external edits are left untouched.
   // The id must match what the last snapshot reported so the user confirms the exact journal they inspected.
