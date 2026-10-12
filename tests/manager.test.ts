@@ -229,6 +229,35 @@ test('separate Node processes serialize updates through the same filesystem lock
     assert.deepEqual(snapshot.providers.map(p => p.name).sort(), ['Process A', 'Process B']);
   } finally { await f.cleanup(); }
 });
+test('re-activating the same configuration does not add a backup identical to the newest one', async () => {
+  const f = await fixture();
+  try {
+    const p = await add(f.manager); const other = await add(f.manager, { ...input('claude', 'Other'), model: 'other-model' });
+    for (let i = 0; i < 3; i++) await f.manager.activate(p.id);
+    // The missing original, then p's output; the third activation would back up p's output again.
+    assert.equal((await f.manager.snapshot()).backups.length, 2);
+    // Switching away backs up p's output too, which the newest backup already holds; switching back adds other's output.
+    await f.manager.activate(other.id); await f.manager.activate(p.id);
+    const backups = (await f.manager.snapshot()).backups;
+    assert.equal(backups.length, 3);
+    await f.manager.restore(backups[0].id);
+    assert.equal(JSON.parse((await readText(f.paths.targets.claude[0]))!).model, 'other-model');
+  } finally { await f.cleanup(); }
+});
+test('listing backups parses each file once; restore reads only the chosen file', async () => {
+  const f = await fixture();
+  try {
+    const p = await add(f.manager); const other = await add(f.manager, input('claude', 'Other'));
+    await f.manager.activate(p.id); const s = await f.manager.activate(other.id);
+    const reads: string[] = [];
+    const manager = f.manager as any; const original = manager.readArchive.bind(manager);
+    manager.readArchive = (path: string) => { reads.push(path); return original(path); };
+    await f.manager.snapshot(); await f.manager.snapshot();
+    assert.deepEqual(reads.filter(r => r.includes('backups')), []);
+    await f.manager.restore(s.backups[1].id);
+    assert.deepEqual(reads.filter(r => r.includes('backups')), [join(f.paths.data, 'backups', `${s.backups[1].id}.json`)]);
+  } finally { await f.cleanup(); }
+});
 test('backup retention is per app', async () => {
   const f = await fixture(2);
   try {

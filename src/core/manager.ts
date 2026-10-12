@@ -1,6 +1,6 @@
 import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readdir, unlink } from 'node:fs/promises';
+import { lstat, readdir, unlink } from 'node:fs/promises';
 import { z } from 'zod';
 import { patchProvider, claudeEnvKeys, jsonObject, asJson, managedFingerprint, providerDefinition } from './adapters';
 import { PENDING_MESSAGE, PublicError } from './errors';
@@ -11,6 +11,9 @@ import { appSchema, providerSchema, type AppId, type BackupInfo, type Hub, type 
 type Entry = { path: string; before: string | null; after: string | null };
 type Journal = { version: 1; id: string; app: AppId; createdAt: string; entries: Entry[] };
 type Backup = { version: 1; info: BackupInfo; entries: Entry[] };
+// What listing a backup yields. `digest` covers what a restore would write: each target's path and before text.
+type BackupMeta = { info: BackupInfo; digest: string };
+const backupDigest = (entries: Entry[]) => hash(JSON.stringify([...entries].sort((a, b) => a.path < b.path ? -1 : 1).map(e => [e.path, e.before])));
 const uuid = z.string().uuid();
 // A pending id is the journal UUID, or the SHA-256 of pending.json when the file cannot be parsed.
 const pendingId = z.string().regex(/^[a-f0-9-]{36}$|^[a-f0-9]{64}$|^unreadable$/);
@@ -22,6 +25,8 @@ export class Manager {
   private hubPath: string;
   private journalPath: string;
   private backupDir: string;
+  // Listing parses each backup file once per version (device, inode, size, mtime, ctime); restore re-reads the chosen file.
+  private backupCache = new Map<string, { version: string; meta: BackupMeta | null }>();
   constructor(private paths: Paths, private env: NodeJS.ProcessEnv = process.env, private retention = 10, private write: typeof replaceText = replaceText) {
     this.hubPath = join(paths.data, 'hub.json');
     this.journalPath = join(paths.data, 'pending.json');
@@ -114,14 +119,22 @@ export class Manager {
   private async transaction(app: AppId, entries: Entry[], check: () => void): Promise<void> {
     const journal: Journal = { version: 1, id: randomUUID(), app, createdAt: new Date().toISOString(), entries };
     const targets = entries.filter(e => e.path !== this.hubPath);
-    const backup: Backup = { version: 1, info: { id: journal.id, app, createdAt: journal.createdAt, files: targets.map(e => basename(e.path)) }, entries: targets };
+    const info: BackupInfo = { id: journal.id, app, createdAt: journal.createdAt, files: targets.map(e => basename(e.path)) };
+    const backup: Backup = { version: 1, info, entries: targets };
     // Every output is bounded before anything is written, so the verify, rollback and recovery reads cannot fail on size.
     if (entries.some(e => byteLength(e.after) > TARGET_LIMIT)) throw new PublicError('切换后的配置超过 8 MiB 限制；已停止，未修改任何文件');
     const encodedBackup = this.encode(backup);
     const encodedJournal = this.encode(journal);
     if (byteLength(encodedBackup) > ARCHIVE_LIMIT || byteLength(encodedJournal) > ARCHIVE_LIMIT) throw new PublicError('备份或恢复日志超过 128 MiB 限制；已停止，未修改任何文件');
-    await ensureDirectory(this.backupDir);
-    await atomicWrite(join(this.backupDir, `${journal.id}.json`), encodedBackup, null);
+    // Re-activating the same configuration would back up the same before texts again and push distinct
+    // history out of the retention window. The newest backup of this app already restores that state.
+    const digest = backupDigest(targets);
+    if ((await this.backups()).list.find(b => b.info.app === app)?.digest !== digest) {
+      const name = `${journal.id}.json`;
+      await atomicWrite(join(this.backupDir, name), encodedBackup, null);
+      const version = await this.fileVersion(join(this.backupDir, name)).catch(() => null);
+      if (version !== null) this.backupCache.set(name, { version, meta: { info, digest } });
+    }
     await atomicWrite(this.journalPath, encodedJournal, null);
     try {
       // Unchanged entries (e.g. Codex auth.json) stay locked, backed up and verified but are not rewritten.
@@ -147,30 +160,46 @@ export class Manager {
     // Retention is housekeeping after commit; it cannot turn a successful switch into a failure.
     await this.prune().catch(() => undefined);
   }
+  private async fileVersion(path: string): Promise<string> {
+    const s = await lstat(path, { bigint: true });
+    return `${s.dev}:${s.ino}:${s.size}:${s.mtimeNs}:${s.ctimeNs}`;
+  }
+  private async readBackup(name: string): Promise<Backup> {
+    const raw = await this.readArchive(join(this.backupDir, name));
+    if (!raw) throw new Error('empty');
+    const b = z.object({ version: z.literal(1), info: z.object({ id: uuid, app: appSchema, createdAt: z.string().datetime(), files: z.array(z.string()) }), entries: z.unknown() }).parse(this.decode(raw));
+    if (`${b.info.id}.json` !== name) throw new Error('id mismatch');
+    const entries = this.validateEntries(b.entries, false);
+    this.validateBackupSet(b.info.app, entries);
+    if (!entries.every(e => b.info.files.includes(basename(e.path)))) throw new Error('files mismatch');
+    return { ...b, entries };
+  }
   // A malformed backup is skipped and reported; it must not block every other operation.
-  private async backups(): Promise<{ list: Backup[]; skipped: string[] }> {
+  private async backups(): Promise<{ list: BackupMeta[]; skipped: string[] }> {
     await ensureDirectory(this.backupDir);
     const names = (await readdir(this.backupDir)).filter(n => /^[a-f0-9-]{36}\.json$/.test(n));
-    const list: Backup[] = [];
+    for (const name of this.backupCache.keys()) if (!names.includes(name)) this.backupCache.delete(name);
+    const list: BackupMeta[] = [];
     const skipped: string[] = [];
     for (const name of names) {
-      try {
-        const raw = await this.readArchive(join(this.backupDir, name));
-        if (!raw) throw new Error('empty');
-        const b = z.object({ version: z.literal(1), info: z.object({ id: uuid, app: appSchema, createdAt: z.string().datetime(), files: z.array(z.string()) }), entries: z.unknown() }).parse(this.decode(raw));
-        if (`${b.info.id}.json` !== name) throw new Error('id mismatch');
-        const entries = this.validateEntries(b.entries, false);
-        this.validateBackupSet(b.info.app, entries);
-        if (!entries.every(e => b.info.files.includes(basename(e.path)))) throw new Error('files mismatch');
-        list.push({ ...b, entries });
-      } catch { skipped.push(name); }
+      // The version is taken before reading, so a file replaced mid-read is parsed again next time.
+      const version = await this.fileVersion(join(this.backupDir, name)).catch(() => null);
+      const cached = this.backupCache.get(name);
+      let meta = version !== null && cached?.version === version ? cached.meta : undefined;
+      if (meta === undefined) {
+        meta = await this.readBackup(name).then(b => ({ info: b.info, digest: backupDigest(b.entries) }), () => null);
+        if (version !== null) this.backupCache.set(name, { version, meta });
+      }
+      if (meta) list.push(meta); else skipped.push(name);
     }
     return { list: list.sort((a, b) => b.info.createdAt.localeCompare(a.info.createdAt)), skipped: skipped.sort() };
   }
   private async prune(): Promise<void> {
     const { list } = await this.backups();
     for (const app of apps) {
-      for (const b of list.filter(b => b.info.app === app).slice(this.retention)) await unlink(join(this.backupDir, `${b.info.id}.json`));
+      for (const b of list.filter(b => b.info.app === app).slice(this.retention)) {
+        await unlink(join(this.backupDir, `${b.info.id}.json`)); this.backupCache.delete(`${b.info.id}.json`);
+      }
     }
     await syncDirectory(this.backupDir);
   }
@@ -272,8 +301,9 @@ export class Manager {
   async restore(id: string): Promise<Snapshot> {
     uuid.parse(id);
     return this.exclusive(async hubCheck => {
-      const backup = (await this.backups()).list.find(b => b.info.id === id);
-      if (!backup) throw new PublicError('备份不存在');
+      if (!(await this.backups()).list.some(b => b.info.id === id)) throw new PublicError('备份不存在');
+      // The list holds metadata only; the chosen file is read and validated again before use.
+      const backup = await this.readBackup(`${id}.json`).catch(() => { throw new PublicError('备份文件已变化或无法解析，请刷新后重试'); });
       await withLocks(backup.entries.map(e => e.path), async targetCheck => {
         const beforeHub = await readText(this.hubPath);
         const hub = await this.readHub();
