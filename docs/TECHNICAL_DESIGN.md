@@ -363,7 +363,7 @@ App
  ├─ 应用导航：Claude / ChatGPT / Pi
  ├─ 本地状态：是否发现文件、hash 变化、刷新
  ├─ ProviderCard[]：当前写入 / 文件变化 / 写入后已编辑 / 重新启用
- ├─ ProviderEditor：新增时先选预设（搜索、分类、自定义）；名称、模式、URL、密钥（可显示）、协议、模型（可获取列表）、别名映射（Claude）、上下文与推理强度（Codex）、备注
+ ├─ ProviderEditor：新增时先选预设（搜索、分类、自定义）；名称、模式、URL、密钥（可显示）、协议、模型（可获取列表）、别名映射（Claude）、上下文与推理强度（Codex）、备注、配置文件（全局设置，与表单双向同步）
  ├─ Modal：编辑或删除 / 恢复确认
  └─ 历史备份：时间、文件、恢复动作
 ```
@@ -384,8 +384,26 @@ interface Bridge {
   resolveJournal(id: string): Promise<Snapshot>;
   importLive(app?: AppId): Promise<Snapshot>;
   listModels(request: ModelListRequest): Promise<ModelList>;
+  configView(request: ConfigViewRequest): Promise<ConfigView>;
+  parseConfig(request: ConfigParseRequest): Promise<ConfigFields>;
 }
 ```
+
+`save(input, config?)` 的第二个参数是配置文件编辑器的文字与打开时的摘要，见下文。
+
+**配置文件编辑。** 与 cc-switch 现行的“关键字段”模型相同，每个应用的一个配置文件被分成两部分：供应商字段随切换写入，其余内容是该 CLI 的全局设置。编辑器位于表单底部，显示的文件与供应商字段如下：
+
+| 应用 | 文件 | 供应商字段（随切换写入） |
+| --- | --- | --- |
+| Claude Code | `settings.json` | `model`，以及 `env` 中切换会清除的键（地址、密钥、模型与别名路由、云平台开关、`CLAUDE_CODE_OAUTH_TOKEN`） |
+| Codex | `config.toml` | `model`、`model_provider`、`profile`、两个上下文键、`model_reasoning_effort`、`model_providers.custom` 与 `miswitch_*` 表 |
+| Pi | `settings.json` | `defaultProvider`、`defaultModel` |
+
+- **显示。** `configView` 读取本机文件，用切换时同一个 `patchProvider()` 把表单草稿的供应商字段投影上去；其余内容（hooks、permissions、插件、`statusLine`、`sandbox_mode`、`[mcp_servers.*]` 等）原样显示。已保存的密钥以占位文字代替，renderer 仍然拿不到保存的密钥。首次打开时返回 `base`：当时全局部分的规范化摘要。
+- **双向同步。** 表单字段变化后约 350 ms，主进程把草稿重新投影到编辑中的文字上，全局部分保持用户的修改；用户离开编辑框时，`parseConfig` 从文字读回供应商字段并填回表单（密钥占位文字表示沿用已保存的密钥）。保存前会先做一次读回。Claude 的 `apiKeyHelper` 与云平台路由无法用表单表示，此时只提示、不同步。
+- **保存。** 供应商字段照常只存入 Hub，等明确的切换才写入目标文件。文字中的全局部分若与当前文件不同，则在同一次保存中写入：取编辑后的全局部分，加上本机文件中原有的供应商字段，经事务写入（先备份完整文件集合、写恢复日志、回读校验）。当前写入记录的字节摘要同步更新，所以本工具自己的写入不会被报告为“文件已被重排”。打开编辑器后若该文件的全局部分被其他程序修改（摘要不符），整个保存被拒绝，什么都不写。全局部分没有变化时不写目标文件。
+- **格式。** JSON 以两空格缩进写回；`config.toml` 以 TOML 序列化写回，与切换相同，注释不保留。Codex 的 `auth.json` 不显示也不改写。
+- **编辑器。** 使用等宽 `<textarea>`，JSON 提供“格式化”，另有“重新读取”放弃全局修改。错误只显示文件名与行号，不回显解析器信息。没有使用 CodeMirror：它要注入内联样式，需要放宽 CSP 的 `style-src 'self'`。
 
 **预设。** `src/core/presets.ts` 收录约 20 个精选供应商（官方、模型厂商、聚合平台），每个按应用给出 Base URL、协议、鉴权头与模型；端点与模型 ID 改编自 cc-switch 的 MIT 预设（见 `THIRD_PARTY_NOTICES.md`），移除了推广与邀请参数，不复制图标。Codex 只收原生支持 Responses 的供应商，因为 MiSwitch 没有把 Responses 转成 Chat Completions 的代理。新增配置时先进入预设选择，选“自定义配置”即空白表单；预设只填默认值，保存时照常校验。官网与“获取 API Key”链接仅限预设列表中的地址，由主进程的 `setWindowOpenHandler` 交给系统浏览器打开，其他新窗口一律拒绝。
 

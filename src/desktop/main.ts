@@ -6,7 +6,7 @@ import { Manager } from '../core/manager';
 import { resolvePaths } from '../core/paths';
 import { publicError } from '../core/errors';
 import { presetLinks } from '../core/presets';
-import type { AppId, ModelListRequest, ProviderInput } from '../core/types';
+import type { AppId, ConfigEdit, ConfigParseRequest, ConfigViewRequest, ModelListRequest, ProviderInput } from '../core/types';
 
 // Development-only isolation for smoke tests. Packaged builds ignore this override.
 const sandboxRoot = !app.isPackaged && process.env.MISWITCH_SANDBOX_ROOT;
@@ -27,12 +27,13 @@ else {
     const entry = join(__dirname, '../dist/index.html');
     const entryUrl = pathToFileURL(entry).href;
     const handlers: Record<string, (payload: any) => Promise<unknown>> = {
-      snapshot: () => manager.snapshot(), save: (p: ProviderInput) => manager.save(p),
+      snapshot: () => manager.snapshot(), save: ({ input, config }: { input: ProviderInput; config?: ConfigEdit }) => manager.save(input, config),
       remove: (id: string) => manager.remove(id), activate: (id: string) => manager.activate(id),
       restore: (id: string) => manager.restore(id), resolveJournal: (id: string) => manager.resolveJournal(id),
       importLive: (app?: AppId) => manager.importLive(app),
       // Chromium's network stack honours the system proxy, which some vendor endpoints need.
-      listModels: (request: ModelListRequest) => manager.listModels(request, (url, init) => net.fetch(url, init))
+      listModels: (request: ModelListRequest) => manager.listModels(request, (url, init) => net.fetch(url, init)),
+      configView: (request: ConfigViewRequest) => manager.configView(request), parseConfig: (request: ConfigParseRequest) => manager.parseConfig(request)
     };
     for (const [name, handler] of Object.entries(handlers)) {
       ipcMain.handle(`miswitch:${name}`, async (event, payload: unknown) => {

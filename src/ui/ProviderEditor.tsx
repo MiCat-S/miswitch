@@ -1,6 +1,6 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { presetMatches, presetsFor, type Preset, type PresetCategory, type PresetFields } from '../core/presets';
-import { reasoningEfforts, type AppId, type ModelList, type ModelListRequest, type ProviderInput, type PublicProvider } from '../core/types';
+import { reasoningEfforts, type AppId, type ConfigDraft, type ConfigEdit, type ConfigFields, type ConfigParseRequest, type ConfigView, type ConfigViewRequest, type ModelList, type ModelListRequest, type ProviderInput, type PublicProvider } from '../core/types';
 import { Modal, errorText, names } from './common';
 
 const categories: [PresetCategory | 'all', string][] = [['all', '全部'], ['official', '官方'], ['vendor', '模型厂商'], ['aggregator', '聚合平台']];
@@ -11,6 +11,12 @@ const aliasFields: [keyof PresetFields & ('smallFastModel' | 'sonnetModel' | 'op
   ['smallFastModel', 'Haiku（小型／快速，后台任务）'], ['sonnetModel', 'Sonnet'], ['opusModel', 'Opus'], ['fableModel', 'Fable']
 ];
 type Draft = PresetFields & { name?: string; notes?: string; hasKey?: boolean; loginProvider?: string };
+const configHints: Record<AppId, string> = {
+  claude: '地址、Key、模型与别名映射随供应商切换写入；其余内容是 Claude Code 的全局设置，保存时立即写入本机 settings.json（写入前自动备份），对所有供应商生效。',
+  chatgpt: '地址、Key、模型、上下文与推理强度随供应商切换写入；其余内容是 Codex 的全局设置，保存时立即写入本机 config.toml（写入前自动备份），对所有供应商生效。保存会重新排版 config.toml，注释不会保留；auth.json 由 Codex 登录管理，不在此编辑。',
+  pi: 'defaultProvider 与 defaultModel 随供应商切换写入；其余内容是 Pi 的全局设置，保存时立即写入本机 settings.json（写入前自动备份），对所有供应商生效。'
+};
+const draftFields = ['name', 'baseUrl', 'apiKey', 'claudeAuth', 'loginProvider', 'model', 'smallFastModel', 'sonnetModel', 'opusModel', 'fableModel', 'contextWindow', 'autoCompactTokenLimit', 'reasoningEffort'] as const;
 
 function PresetPicker({ app, onPick }: { app: AppId; onPick(preset: Preset | null): void }) {
   const [query, setQuery] = useState('');
@@ -35,8 +41,9 @@ function PresetPicker({ app, onPick }: { app: AppId; onPick(preset: Preset | nul
   </div>;
 }
 
-export function ProviderEditor({ app, provider, busy, error, onClose, onSave, listModels }: {
-  app: AppId; provider?: PublicProvider; busy: boolean; error: string; onClose(): void; onSave(input: ProviderInput): void; listModels(request: ModelListRequest): Promise<ModelList>;
+export function ProviderEditor({ app, provider, busy, error, onClose, onSave, listModels, configView, parseConfig }: {
+  app: AppId; provider?: PublicProvider; busy: boolean; error: string; onClose(): void; onSave(input: ProviderInput, config?: ConfigEdit): void;
+  listModels(request: ModelListRequest): Promise<ModelList>; configView(request: ConfigViewRequest): Promise<ConfigView>; parseConfig(request: ConfigParseRequest): Promise<ConfigFields>;
 }) {
   const [stage, setStage] = useState<'pick' | 'form'>(provider ? 'form' : 'pick');
   const [preset, setPreset] = useState<Preset | null>(null);
@@ -48,12 +55,65 @@ export function ProviderEditor({ app, provider, busy, error, onClose, onSave, li
   const [fetching, setFetching] = useState(false);
   const form = useRef<HTMLFormElement>(null);
   const field = (name: string) => form.current?.elements.namedItem(name) as HTMLInputElement | HTMLSelectElement | null;
-  const pick = (next: Preset | null) => {
-    setPreset(next); setMode(next?.apps[app]?.mode ?? 'api'); setModels([]); setModelStatus(null); setShowKey(false); setStage('form');
+  // The configuration file: the text is the source of truth for global settings, and stays in sync with the
+  // form for provider fields. `synced` is the last text the form was updated from (or composed to).
+  const [config, setConfig] = useState<ConfigView | null>(null);
+  const [configText, setConfigText] = useState('');
+  const [configError, setConfigError] = useState('');
+  const textRef = useRef('');
+  const synced = useRef('');
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const setText = (value: string, fromForm = false) => { textRef.current = value; setConfigText(value); if (fromForm) synced.current = value; };
+  const readDraft = (): ConfigDraft => {
+    if (!form.current) return { mode };
+    const data = new FormData(form.current);
+    const value = (name: string) => data.has(name) ? String(data.get(name)) : undefined;
+    return { mode, ...Object.fromEntries(draftFields.map(name => [name, value(name)]).filter(([, v]) => v !== undefined)) } as ConfigDraft;
   };
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const loadConfig = async () => {
+    setConfigError('');
+    const view = await configView({ app, draft: readDraft(), providerId: provider?.id }).catch(e => ({ error: errorText(e) }) as ConfigView);
+    if (view.error || view.text === undefined) { setConfig(null); setConfigError(view.error ?? '无法读取配置文件'); return; }
+    setConfig(view); setText(view.text, true);
+  };
+  const recompose = () => {
+    clearTimeout(timer.current);
+    timer.current = setTimeout(async () => {
+      if (!config) return;
+      const sent = textRef.current;
+      const view = await configView({ app, draft: readDraft(), providerId: provider?.id, text: sent }).catch(e => ({ error: errorText(e) }) as ConfigView);
+      if (textRef.current !== sent) return; // the user typed in the file meanwhile; their text wins
+      if (view.error || view.text === undefined) { setConfigError(view.error ?? '无法更新配置文件'); return; }
+      setConfigError(''); setText(view.text, true);
+    }, 350);
+  };
+  const syncFromText = async () => {
+    const current = textRef.current;
+    if (!config || current === synced.current) return;
+    const result = await parseConfig({ app, text: current }).catch(e => ({ error: errorText(e) }) as ConfigFields);
+    synced.current = current;
+    if (result.error || !result.fields) { setConfigError(result.error ?? ''); return; }
+    setConfigError('');
+    for (const [name, value] of Object.entries(result.fields)) {
+      if (value === undefined) continue;
+      if (name === 'mode') setMode(value as 'api' | 'login');
+      else { const input = field(name); if (input) input.value = value; }
+    }
+  };
+  const formatConfig = () => {
+    try { setText(JSON.stringify(JSON.parse(textRef.current), null, 2) + '\n'); setConfigError(''); }
+    catch { setConfigError('JSON 格式错误，无法格式化'); }
+  };
+  useEffect(() => { if (stage === 'form') void loadConfig(); return () => clearTimeout(timer.current); }, [stage, preset]);
+  useEffect(() => { if (config) recompose(); }, [mode]);
+  const pick = (next: Preset | null) => {
+    setPreset(next); setMode(next?.apps[app]?.mode ?? 'api'); setModels([]); setModelStatus(null); setShowKey(false); setConfig(null); setStage('form');
+  };
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const element = event.currentTarget;
+    await syncFromText();
+    const data = new FormData(element);
     const text = (name: string) => String(data.get(name) ?? '').trim() || undefined;
     onSave({ id: provider?.id, app, name: String(data.get('name')), mode,
       baseUrl: String(data.get('baseUrl') ?? ''), model: String(data.get('model')),
@@ -63,7 +123,8 @@ export function ProviderEditor({ app, provider, busy, error, onClose, onSave, li
       notes: String(data.get('notes')), apiKey: String(data.get('apiKey') ?? '') || undefined,
       smallFastModel: text('smallFastModel'), sonnetModel: text('sonnetModel'), opusModel: text('opusModel'), fableModel: text('fableModel'),
       reasoningEffort: text('reasoningEffort') as ProviderInput['reasoningEffort'],
-      contextWindow: Number(data.get('contextWindow')) || undefined, autoCompactTokenLimit: Number(data.get('autoCompactTokenLimit')) || undefined });
+      contextWindow: Number(data.get('contextWindow')) || undefined, autoCompactTokenLimit: Number(data.get('autoCompactTokenLimit')) || undefined },
+      config?.base ? { text: textRef.current, base: config.base } : undefined);
   };
   const fetchModels = async () => {
     setFetching(true); setModelStatus(null);
@@ -86,7 +147,7 @@ export function ProviderEditor({ app, provider, busy, error, onClose, onSave, li
       <button type="button" disabled={busy} onClick={() => setStage('pick')}>{preset ? '更换预设' : '选择预设'}</button>
     </div> : null}
     {/* Remounted per preset: the fields are uncontrolled and take their defaults from the draft. */}
-    <form ref={form} key={preset?.id ?? 'custom'} onSubmit={submit}><fieldset disabled={busy}>
+    <form ref={form} key={preset?.id ?? 'custom'} onSubmit={event => void submit(event)} onChange={event => { if ((event.target as HTMLElement).id !== 'config-text') recompose(); }}><fieldset disabled={busy}>
       <label>配置名称<input name="name" autoFocus required maxLength={100} defaultValue={draft?.name} placeholder="例如：官方直连 / 工作网关" /></label>
       <label>连接方式<select value={mode} onChange={e => setMode(e.target.value as 'api' | 'login')}><option value="api">API Key / 自定义端点</option><option value="login">{app === 'pi' ? '沿用 Pi 已有的 Provider' : '使用已有官方登录'}</option></select></label>
       {/* API fields stay mounted while in login mode so an unsaved draft survives switching back.
@@ -132,6 +193,22 @@ export function ProviderEditor({ app, provider, busy, error, onClose, onSave, li
         </select></label>
       </> : null}
       <label>备注<textarea name="notes" rows={2} maxLength={2000} defaultValue={draft?.notes} /></label>
+      <section className="config-file" aria-labelledby="config-title">
+        <div className="field-head">
+          <label id="config-title" htmlFor="config-text">配置文件 · {config?.name ?? (app === 'chatgpt' ? 'config.toml' : 'settings.json')}{config ? `（${config.format.toUpperCase()}）` : ''}</label>
+          <span className="config-actions">
+            {config?.format === 'json' ? <button type="button" className="link-button" onClick={formatConfig}>格式化</button> : null}
+            <button type="button" className="link-button" onClick={() => void loadConfig()} title="放弃此处对全局设置的修改，重新读取本机文件">重新读取</button>
+          </span>
+        </div>
+        {config ? <>
+          <textarea id="config-text" className="config-editor" spellCheck={false} wrap="off" rows={Math.min(28, Math.max(10, configText.split('\n').length + 1))}
+            value={configText} onChange={e => setText(e.target.value)} onBlur={() => void syncFromText()} aria-describedby="config-hint" />
+          <small className="config-path">{config.path}</small>
+        </> : null}
+        {configError ? <p className="error" role="alert">{configError}</p> : null}
+        <p className="hint" id="config-hint">{configHints[app]}</p>
+      </section>
       <p className="hint">数据仅保存在本机，使用明文文件。请勿把配置目录加入版本控制或公开同步。</p>
       {error ? <p role="alert" className="error">{error}</p> : null}
       <div className="dialog-actions"><button type="button" onClick={onClose}>取消</button><button className="primary" type="submit">{busy ? '保存中…' : '保存配置'}</button></div>

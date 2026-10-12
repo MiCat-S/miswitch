@@ -79,6 +79,28 @@ app.on('browser-window-created', (_event, window) => {
         return result;
       })()`);
       assert.deepEqual(draft, { hiddenWhileLogin: true, url: 'https://unsaved.test', keyLength: 16, small: 'smoke-small' });
+      // The configuration file: the saved key stays hidden, provider fields edited in the text sync back to the form,
+      // and a save writes only the global part (permissions) while the model waits for the next switch.
+      const configEdit = await window.webContents.executeJavaScript(`(async () => {
+        const tick = () => new Promise(resolve => requestAnimationFrame(resolve));
+        const until = async fn => { for(let i=0;i<240;i++){if(fn())return;await tick();}throw new Error('UI state timeout'); };
+        document.querySelector('.card-actions button:nth-child(2)').click();
+        await until(() => document.querySelector('#config-text')?.value.includes('ANTHROPIC_MODEL'));
+        const area = document.querySelector('#config-text');
+        const shown = area.value;
+        const value = JSON.parse(shown); value.permissions = { allow: ['Bash(ls)'] }; value.env.ANTHROPIC_MODEL = 'smoke-from-text';
+        area.focus();
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(area, JSON.stringify(value, null, 2));
+        area.dispatchEvent(new Event('input', { bubbles: true }));
+        area.blur();
+        await until(() => document.querySelector('input[name=model]').value === 'smoke-from-text');
+        document.querySelector('form').requestSubmit();
+        await until(() => !document.querySelector('dialog'));
+        return { keyHidden: !shown.includes('sk-smoke-only') && shown.includes('已保存的密钥'), badge: document.querySelector('.provider-card .badge').textContent };
+      })()`);
+      assert.deepEqual(configEdit, { keyHidden: true, badge: '已编辑，待重新写入' });
+      const afterEdit = JSON.parse(readFileSync(join(root, 'home', '.claude', 'settings.json'), 'utf8'));
+      assert.deepEqual(afterEdit.permissions, { allow: ['Bash(ls)'] }); assert.equal(afterEdit.env.ANTHROPIC_MODEL, 'smoke-model');
       // Long user text and 200 % zoom of the minimum window must not widen the page. Changing the model of the
       // active provider keeps it marked as written, flagged as edited until it is written again.
       const editedBadge = await window.webContents.executeJavaScript(`(async () => {
@@ -116,7 +138,7 @@ app.on('browser-window-created', (_event, window) => {
         const restored=await window.miswitch.snapshot();
         if(restored.active.claude) throw new Error('Restore kept active marker');
       })()`);
-      console.log('Desktop smoke passed: real preload IPC, preset picker, React form save, small/fast model, validation message, draft persistence, edited badge, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
+      console.log('Desktop smoke passed: real preload IPC, preset picker, React form save, configuration file editing, small/fast model, validation message, draft persistence, edited badge, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
       clearTimeout(timeout);
       window.destroy();
       // Electron may still have cache handles open; test data is synthetic and safe to clean up.

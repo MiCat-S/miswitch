@@ -79,13 +79,32 @@ export const modelListRequestSchema = z.object({
 }).strict();
 export type ModelListRequest = z.input<typeof modelListRequestSchema>;
 export type ModelList = { models: string[]; url: string };
+// Form values as text, for projecting a draft onto a configuration file and reading it back. Empty clears a field.
+const draftText = z.string().max(8192).optional();
+export const configDraftSchema = z.object({
+  name: draftText, mode: z.enum(['api', 'login']).optional(), baseUrl: draftText, apiKey: draftText, claudeAuth: z.enum(['api-key', 'bearer']).optional(),
+  loginProvider: draftText, model: draftText, smallFastModel: draftText, sonnetModel: draftText, opusModel: draftText, fableModel: draftText,
+  contextWindow: draftText, autoCompactTokenLimit: draftText, reasoningEffort: draftText
+}).strict();
+export type ConfigDraft = z.infer<typeof configDraftSchema>;
+export const configViewRequestSchema = z.object({ app: appSchema, draft: configDraftSchema, providerId: z.string().uuid().optional(), text: z.string().max(8 * 1024 * 1024).optional() }).strict();
+export type ConfigViewRequest = z.input<typeof configViewRequestSchema>;
+// `base` digests the global part of the file when the view was opened; a save compares it to detect outside edits.
+export type ConfigView = { name: string; path: string; format: 'json' | 'toml'; text?: string; base?: string; error?: string };
+export const configParseRequestSchema = z.object({ app: appSchema, text: z.string().max(8 * 1024 * 1024) }).strict();
+export type ConfigParseRequest = z.input<typeof configParseRequestSchema>;
+export type ConfigFields = { fields?: ConfigDraft; keptKey?: boolean; error?: string };
+export const configEditSchema = z.object({ text: z.string().max(8 * 1024 * 1024), base: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+export type ConfigEdit = z.input<typeof configEditSchema>;
 export interface Bridge {
   snapshot(): Promise<Snapshot>;
-  save(input: ProviderInput): Promise<Snapshot>;
+  save(input: ProviderInput, config?: ConfigEdit): Promise<Snapshot>;
   remove(id: string): Promise<Snapshot>;
   activate(id: string): Promise<Snapshot>;
   restore(id: string): Promise<Snapshot>;
   resolveJournal(id: string): Promise<Snapshot>;
   importLive(app?: AppId): Promise<Snapshot>;
   listModels(request: ModelListRequest): Promise<ModelList>;
+  configView(request: ConfigViewRequest): Promise<ConfigView>;
+  parseConfig(request: ConfigParseRequest): Promise<ConfigFields>;
 }

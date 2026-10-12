@@ -2,12 +2,13 @@ import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { lstat, readdir, unlink } from 'node:fs/promises';
 import { z } from 'zod';
-import { patchProvider, claudeEnvKeys, jsonObject, asJson, managedFingerprint, providerDefinition, liveProvider, RULES } from './adapters';
+import { patchProvider, claudeEnvKeys, jsonObject, asJson, canonical, managedFingerprint, providerDefinition, liveProvider, RULES } from './adapters';
 import { PENDING_MESSAGE, PublicError, publicError } from './errors';
 import { ARCHIVE_LIMIT, TARGET_LIMIT, atomicWrite, byteLength, ensureDirectory, hash, readText, replaceText, syncDirectory, withLocks } from './files';
 import type { Paths } from './paths';
 import { fetchModelList } from './models';
-import { appSchema, modelListRequestSchema, providerSchema, type AppId, type ModelList, type ModelListRequest, type BackupInfo, type Hub, type PendingInfo, type Provider, type ProviderInput, type Snapshot } from './types';
+import { composeConfig, editorFile, fieldsFromConfig, globalDigest, joinConfig, parseConfigText, serializeConfig, splitConfig } from './config-editor';
+import { appSchema, configEditSchema, configParseRequestSchema, configViewRequestSchema, modelListRequestSchema, providerSchema, type AppId, type ConfigEdit, type ConfigFields, type ConfigParseRequest, type ConfigView, type ConfigViewRequest, type ModelList, type ModelListRequest, type BackupInfo, type Hub, type PendingInfo, type Provider, type ProviderInput, type Snapshot } from './types';
 
 type Entry = { path: string; before: string | null; after: string | null };
 type Journal = { version: 1; id: string; app: AppId; createdAt: string; entries: Entry[] };
@@ -257,8 +258,11 @@ export class Manager {
     return { providers: hub.providers.map(({ apiKey, ...p }) => ({ ...p, hasKey: !!apiKey })), active, diagnostics, backups: list.map(b => b.info), pending, warnings };
   }
   snapshot(): Promise<Snapshot> { return this.exclusive((_check, pending) => this.snapshotUnlocked(pending), true); }
-  async save(raw: ProviderInput): Promise<Snapshot> {
+  // `config` carries the editor's text: its global part (everything the provider does not own) is written to the
+  // CLI's file now, for every provider, while the provider's own fields still wait for an explicit switch.
+  async save(raw: ProviderInput, config?: ConfigEdit): Promise<Snapshot> {
     const input = providerSchema.parse(raw);
+    const edit = config === undefined ? undefined : configEditSchema.parse(config);
     return this.exclusive(async check => {
       const before = await readText(this.hubPath);
       const hub = await this.readHub();
@@ -275,9 +279,58 @@ export class Manager {
       if (input.mode === 'api' && !storedKey) throw new PublicError('API 模式需要密钥');
       const provider: Provider = { ...rest, id, apiKey: storedKey, updatedAt: new Date().toISOString() };
       hub.providers = [...hub.providers.filter(p => p.id !== id), provider];
+      if (edit) {
+        const paths = this.paths.targets[input.app];
+        const index = editorFile(input.app).index;
+        const written = await withLocks(paths, async targetCheck => {
+          const current = await Promise.all(paths.map(path => readText(path)));
+          let live: Record<string, any>;
+          try { live = parseConfigText(input.app, current[index] ?? ''); } catch { throw new PublicError('本机配置文件无法解析，未保存全局设置；请先修复该文件'); }
+          if (hash(globalDigest(input.app, live)) !== edit.base) throw new PublicError('配置文件在编辑期间已被其他程序修改；请关闭编辑器后重新打开，再修改全局设置');
+          const edited = splitConfig(input.app, parseConfigText(input.app, edit.text)).global;
+          if (canonical(edited) === canonical(splitConfig(input.app, live).global)) return false;
+          // The provider-owned part stays exactly as it is in the file; only a switch changes it.
+          const next = serializeConfig(input.app, joinConfig(edited, splitConfig(input.app, live).owned));
+          // Our own write must not look like a CLI reformat to the active record.
+          const record = hub.active[input.app];
+          if (record && record.hashes[paths[index]] === hash(current[index])) record.hashes[paths[index]] = hash(next);
+          const entries = paths.map((path, i) => ({ path, before: current[i], after: i === index ? next : current[i] }));
+          entries.push({ path: this.hubPath, before, after: asJson(hub) });
+          await this.transaction(input.app, entries, () => { check(); targetCheck(); });
+          return true;
+        });
+        if (written) return this.snapshotUnlocked();
+      }
       check(); await atomicWrite(this.hubPath, asJson(hub), before);
       return this.snapshotUnlocked();
     });
+  }
+  // The editor's text for a draft: the draft's provider fields projected onto the CLI's file (or onto the
+  // text being edited). A saved key is replaced by a placeholder; problems come back as `error`, not thrown.
+  async configView(raw: ConfigViewRequest): Promise<ConfigView> {
+    const request = configViewRequestSchema.parse(raw);
+    const paths = this.paths.targets[request.app];
+    const { index, format } = editorFile(request.app);
+    const view: ConfigView = { name: basename(paths[index]), path: paths[index], format };
+    const current = await Promise.all(paths.map(path => readText(path).catch(() => null)));
+    const hub = await this.readHub();
+    const hasSavedKey = !!request.providerId && !!hub.providers.find(p => p.id === request.providerId && p.app === request.app)?.apiKey;
+    try {
+      if (request.text === undefined) view.base = hash(globalDigest(request.app, parseConfigText(request.app, current[index] ?? '')));
+    } catch { return { ...view, error: `本机 ${view.name} 无法解析，请先修复该文件后再在此编辑` }; }
+    try {
+      const others = request.app === 'chatgpt' ? [current[1]] : [];
+      view.text = composeConfig(request.app, request.text ?? current[index] ?? '', request.draft, others, { id: request.providerId, hasSavedKey: hasSavedKey && !request.draft.apiKey });
+    } catch (error) { return { ...view, error: publicError(error) }; }
+    return view;
+  }
+  // Reads the provider fields back from the editor's text, so the form follows edits made in the file.
+  async parseConfig(raw: ConfigParseRequest): Promise<ConfigFields> {
+    const request = configParseRequestSchema.parse(raw);
+    try {
+      const parsed = fieldsFromConfig(request.app, request.text);
+      return parsed ?? { error: '该配置使用了表单无法表示的设置（例如 apiKeyHelper 或云平台路由），表单不会同步' };
+    } catch (error) { return { error: publicError(error) }; }
   }
   async remove(id: string): Promise<Snapshot> {
     uuid.parse(id);

@@ -182,7 +182,12 @@ textarea { resize: vertical; }
 .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 22px; flex-wrap: wrap; }
 dialog > p { font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
-dialog.wide { width: 560px; }
+dialog.wide { width: 640px; }
+.config-file { border-top: 1px solid var(--line-soft); padding-top: 14px; margin-bottom: 4px; display: grid; gap: 7px; }
+.config-file .hint, .config-file .error { margin: 0; }
+.config-actions { display: flex; gap: 14px; }
+.config-editor { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.55; white-space: pre; overflow: auto; tab-size: 2; resize: vertical; background: var(--surface-2); }
+.config-path { font-size: 11px; color: var(--text-3); overflow-wrap: anywhere; }
 .field { display: grid; gap: 7px; margin-bottom: 14px; }
 .field-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .field-head label, .field-head legend { display: inline; margin: 0; padding: 0; font-size: 12px; font-weight: 600; }

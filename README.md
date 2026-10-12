@@ -43,6 +43,8 @@ Claude Code 使用 Anthropic Messages；Codex 使用 Responses；Pi 可选择 An
 
 Claude Code 的后台任务和 haiku／sonnet／opus／fable 别名默认请求 Anthropic 的模型 ID；网关没有这些模型时，在“模型别名映射”中填写（写入 `ANTHROPIC_DEFAULT_*_MODEL`），或点“全部填为默认 Model”。Codex 可选推理强度（`model_reasoning_effort`），只在切换时写入。
 
+配置表单底部是完整的配置文件（Claude `settings.json`、Codex `config.toml`、Pi `settings.json`），与上方字段双向同步。地址、Key、模型等供应商字段随切换写入；其余内容（hooks、permissions、插件、`sandbox_mode`、MCP 等）是该 CLI 的全局设置，保存时立即写入本机文件（先自动备份），对所有供应商生效。打开编辑器后若文件被其他程序修改，保存会被拒绝。已保存的密钥在编辑器中以占位文字显示。
+
 “官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Pi 的对应模式是“沿用 Pi 已有的 Provider”：只切换 `defaultProvider` 与 `defaultModel`，不改动该 Provider 本身（`/login` 保存的登录、`auth.json` 中的密钥或 `models.json` 中的定义）。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
 
 Codex 的写法与 cc-switch 相同：第三方路由写在 `model_providers.custom` 并以 `experimental_bearer_token` 保存密钥，官方路由移除 `model_provider`；两个工具可以接管同一份配置。
