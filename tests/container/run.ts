@@ -90,8 +90,10 @@ async function main() {
       ...summary.map(s => `  ${s}`),
       `  cli output: ${result.output.trim().split('\n').slice(-4).join(' | ').slice(0, 600)}`
     ].join('\n');
-    results.push({ name: c.name, ok: matched.length > 0, detail });
-    console.log(`\n=== ${c.name}: ${matched.length > 0 ? 'PASS' : 'FAIL'}\n${detail}`);
+    // Routing proof (a matching request) and CLI completion (exit 0, no timeout) are both required.
+    const ok = matched.length > 0 && result.code === 0 && !result.timedOut;
+    results.push({ name: c.name, ok, detail });
+    console.log(`\n=== ${c.name}: ${ok ? 'PASS' : 'FAIL'}${matched.length > 0 && !ok ? ' (routed, but CLI did not complete cleanly)' : ''}\n${detail}`);
   }
   mock.kill();
   const failed = results.filter(r => !r.ok);

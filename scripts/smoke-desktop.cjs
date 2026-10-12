@@ -45,6 +45,48 @@ app.on('browser-window-created', (_event, window) => {
       assert.deepEqual(state, { name: 'Smoke Claude', status: 'written', backups: 1, dialog: false });
       const config = JSON.parse(readFileSync(join(root, 'home', '.claude', 'settings.json'), 'utf8'));
       assert.equal(config.env.ANTHROPIC_API_KEY, 'sk-smoke-only');
+      // Draft survives API → login → API; a login save drops the key, an API save keeps it.
+      const draft = await window.webContents.executeJavaScript(`(async () => {
+        const tick = () => new Promise(resolve => requestAnimationFrame(resolve));
+        const until = async fn => { for(let i=0;i<120;i++){if(fn())return;await tick();}throw new Error('UI state timeout'); };
+        document.querySelector('.card-actions button:nth-child(2)').click();
+        await until(() => document.querySelector('dialog[open]'));
+        document.querySelector('input[name=baseUrl]').value = 'https://unsaved.test';
+        document.querySelector('input[name=apiKey]').value = 'sk-unsaved-draft';
+        const mode = document.querySelector('dialog[open] select');
+        const set = v => { const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; setter.call(mode, v); mode.dispatchEvent(new Event('change', { bubbles: true })); };
+        set('login'); await tick(); const hiddenWhileLogin = document.querySelector('input[name=baseUrl]').closest('fieldset').hidden;
+        set('api'); await tick();
+        const result = { hiddenWhileLogin, url: document.querySelector('input[name=baseUrl]').value, keyLength: document.querySelector('input[name=apiKey]').value.length };
+        document.querySelector('dialog[open] .dialog-actions button').click();
+        await until(() => !document.querySelector('dialog'));
+        return result;
+      })()`);
+      assert.deepEqual(draft, { hiddenWhileLogin: true, url: 'https://unsaved.test', keyLength: 16 });
+      // Long user text and 200 % zoom of the minimum window must not widen the page.
+      await window.webContents.executeJavaScript(`(async () => {
+        const s = await window.miswitch.snapshot(); const p = s.providers[0];
+        await window.miswitch.save({ id: p.id, app: 'claude', name: 'A'.repeat(100), mode: 'api', baseUrl: 'https://example.test', model: 'model'.repeat(40), protocol: 'anthropic-messages', notes: 'X'.repeat(2000) });
+        document.querySelector('.status-panel button').click();
+        for (let i = 0; i < 200; i++) { if (document.querySelector('.provider-card h2')?.textContent.length === 100 && !document.querySelector('header .primary').disabled) return; await new Promise(r => requestAnimationFrame(r)); }
+        throw new Error('long text refresh timeout');
+      })()`);
+      const measure = () => window.webContents.executeJavaScript(`({ viewport: innerWidth, page: document.documentElement.scrollWidth, card: document.querySelector('.provider-card').scrollWidth, cardBox: document.querySelector('.provider-card').clientWidth })`);
+      window.setSize(840, 600); await new Promise(r => setTimeout(r, 250));
+      const longText = await measure();
+      assert.ok(longText.page <= longText.viewport && longText.card <= longText.cardBox, 'long text overflow: ' + JSON.stringify(longText));
+      window.webContents.setZoomFactor(2); await new Promise(r => setTimeout(r, 250));
+      const zoomed = await measure();
+      assert.ok(zoomed.viewport <= 440 && zoomed.page <= zoomed.viewport, '200% zoom overflow: ' + JSON.stringify(zoomed));
+      window.webContents.setZoomFactor(1); window.setSize(1140, 820); await new Promise(r => setTimeout(r, 250));
+      await window.webContents.executeJavaScript(`(async () => {
+        const s = await window.miswitch.snapshot(); const p = s.providers[0];
+        await window.miswitch.save({ id: p.id, app: 'claude', name: 'Smoke Claude', mode: 'api', baseUrl: 'https://api.anthropic.com', model: 'smoke-model', protocol: 'anthropic-messages', notes: '' });
+        await window.miswitch.activate(p.id);
+        document.querySelector('.status-panel button').click();
+        for (let i = 0; i < 200; i++) { if (document.querySelector('.badge.green') && !document.querySelector('header .primary').disabled) return; await new Promise(r => requestAnimationFrame(r)); }
+        throw new Error('restore refresh timeout');
+      })()`);
       await window.webContents.executeJavaScript(`(async () => {
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         await Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => undefined)));
@@ -56,7 +98,7 @@ app.on('browser-window-created', (_event, window) => {
         const restored=await window.miswitch.snapshot();
         if(restored.active.claude) throw new Error('Restore kept active marker');
       })()`);
-      console.log('Desktop smoke passed: real preload IPC, React form save, validation message, activation, backup, restore, no snapshot key leak.');
+      console.log('Desktop smoke passed: real preload IPC, React form save, validation message, draft persistence, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
       clearTimeout(timeout);
       window.destroy();
       // Electron may still have cache handles open; test data is synthetic and safe to clean up.
