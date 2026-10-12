@@ -27,6 +27,11 @@ const cases: Case[] = [
     provider: { app: 'claude', name: 'Claude bearer mock', mode: 'api', baseUrl: base, apiKey: 'sk-claude-bearer-test', model: 'claude-container-model', protocol: 'anthropic-messages', claudeAuth: 'bearer' },
     command: ['claude', '-p', 'Reply with ok', '--output-format', 'text'],
     env: { DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1' } },
+  // The haiku alias resolves through ANTHROPIC_DEFAULT_HAIKU_MODEL, the same route background tasks use.
+  { app: 'claude', name: 'Claude Code · haiku alias uses the small/fast model', expect: { path: /^\/v1\/messages$/, model: 'claude-container-small', header: 'authorization', value: 'Bearer sk-claude-small-test' },
+    provider: { app: 'claude', name: 'Claude small mock', mode: 'api', baseUrl: base, apiKey: 'sk-claude-small-test', model: 'claude-container-model', smallFastModel: 'claude-container-small', protocol: 'anthropic-messages', claudeAuth: 'bearer' },
+    command: ['claude', '-p', '--model', 'haiku', 'Reply with ok', '--output-format', 'text'],
+    env: { DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1' } },
   { app: 'chatgpt', name: 'Codex CLI · experimental_bearer_token', expect: { path: /^\/v1\/responses$/, model: 'codex-container-model', header: 'authorization', value: 'Bearer sk-codex-container-test' },
     provider: { app: 'chatgpt', name: 'Codex mock', mode: 'api', baseUrl: `${base}/v1`, apiKey: 'sk-codex-container-test', model: 'codex-container-model', protocol: 'openai-responses' },
     command: ['codex', 'exec', '--skip-git-repo-check', '--sandbox', 'read-only', 'Reply with ok'] },

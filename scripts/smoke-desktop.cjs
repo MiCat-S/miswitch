@@ -21,6 +21,7 @@ app.on('browser-window-created', (_event, window) => {
         document.querySelector('input[name=name]').value = 'Smoke Claude';
         document.querySelector('input[name=model]').value = 'smoke-model';
         document.querySelector('input[name=apiKey]').value = 'sk-smoke-only';
+        document.querySelector('input[name=smallFastModel]').value = ' smoke-small ';
         document.querySelector('form').requestSubmit();
         await until(() => !document.querySelector('dialog') && document.querySelector('.provider-card'));
         document.querySelector('.card-actions button').click();
@@ -45,6 +46,7 @@ app.on('browser-window-created', (_event, window) => {
       assert.deepEqual(state, { name: 'Smoke Claude', status: 'written', backups: 1, dialog: false });
       const config = JSON.parse(readFileSync(join(root, 'home', '.claude', 'settings.json'), 'utf8'));
       assert.equal(config.env.ANTHROPIC_API_KEY, 'sk-smoke-only');
+      assert.equal(config.env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'smoke-small');
       // Draft survives API → login → API; a login save drops the key, an API save keeps it.
       const draft = await window.webContents.executeJavaScript(`(async () => {
         const tick = () => new Promise(resolve => requestAnimationFrame(resolve));
@@ -55,14 +57,14 @@ app.on('browser-window-created', (_event, window) => {
         document.querySelector('input[name=apiKey]').value = 'sk-unsaved-draft';
         const mode = document.querySelector('dialog[open] select');
         const set = v => { const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; setter.call(mode, v); mode.dispatchEvent(new Event('change', { bubbles: true })); };
-        set('login'); await tick(); const hiddenWhileLogin = document.querySelector('input[name=baseUrl]').closest('fieldset').hidden;
+        set('login'); await tick(); const hiddenWhileLogin = document.querySelector('input[name=baseUrl]').closest('fieldset').hidden && document.querySelector('input[name=smallFastModel]').closest('fieldset').hidden;
         set('api'); await tick();
-        const result = { hiddenWhileLogin, url: document.querySelector('input[name=baseUrl]').value, keyLength: document.querySelector('input[name=apiKey]').value.length };
+        const result = { hiddenWhileLogin, url: document.querySelector('input[name=baseUrl]').value, keyLength: document.querySelector('input[name=apiKey]').value.length, small: document.querySelector('input[name=smallFastModel]').value };
         document.querySelector('dialog[open] .dialog-actions button').click();
         await until(() => !document.querySelector('dialog'));
         return result;
       })()`);
-      assert.deepEqual(draft, { hiddenWhileLogin: true, url: 'https://unsaved.test', keyLength: 16 });
+      assert.deepEqual(draft, { hiddenWhileLogin: true, url: 'https://unsaved.test', keyLength: 16, small: 'smoke-small' });
       // Long user text and 200 % zoom of the minimum window must not widen the page.
       await window.webContents.executeJavaScript(`(async () => {
         const s = await window.miswitch.snapshot(); const p = s.providers[0];
@@ -98,7 +100,7 @@ app.on('browser-window-created', (_event, window) => {
         const restored=await window.miswitch.snapshot();
         if(restored.active.claude) throw new Error('Restore kept active marker');
       })()`);
-      console.log('Desktop smoke passed: real preload IPC, React form save, validation message, draft persistence, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
+      console.log('Desktop smoke passed: real preload IPC, React form save, small/fast model, validation message, draft persistence, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
       clearTimeout(timeout);
       window.destroy();
       // Electron may still have cache handles open; test data is synthetic and safe to clean up.

@@ -155,6 +155,28 @@ test('external change marks drift; active delete is refused and editing clears t
     assert.equal(await readText(f.paths.targets.claude[0]), '{"external":"change"}');
   } finally { await f.cleanup(); }
 });
+test('Claude small/fast model is written to the haiku route; legacy and alias routes are cleared', async () => {
+  const f = await fixture();
+  try {
+    const path = f.paths.targets.claude[0];
+    await f.put(path, JSON.stringify({ env: { ANTHROPIC_SMALL_FAST_MODEL: 'stale-small', ANTHROPIC_DEFAULT_FABLE_MODEL: 'stale-fable', CLAUDE_CODE_SUBAGENT_MODEL: 'haiku' } }));
+    const p = await add(f.manager, { ...input('claude'), smallFastModel: ' gateway-small ' });
+    assert.equal((await f.manager.snapshot()).providers[0].smallFastModel, 'gateway-small');
+    await f.manager.activate(p.id);
+    let env = JSON.parse((await readText(path))!).env;
+    assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'gateway-small'); assert.equal(env.ANTHROPIC_MODEL, 'test-model');
+    assert.equal(env.ANTHROPIC_SMALL_FAST_MODEL, undefined); assert.equal(env.ANTHROPIC_DEFAULT_FABLE_MODEL, undefined);
+    assert.equal(env.CLAUDE_CODE_SUBAGENT_MODEL, 'haiku');
+    // The haiku route is a managed field.
+    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = 'other'; await f.put(path, JSON.stringify({ env, model: 'test-model' }));
+    assert.equal((await f.manager.snapshot()).diagnostics[0].state, 'drift');
+    const plain = await add(f.manager, input('claude', 'Plain')); await f.manager.activate(plain.id);
+    env = JSON.parse((await readText(path))!).env;
+    assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined);
+    await assert.rejects(() => f.manager.save({ ...input('chatgpt'), smallFastModel: 'x' }), /仅适用于 Claude Code 的 API 模式/);
+    await assert.rejects(() => f.manager.save({ ...input('claude'), mode: 'login', apiKey: undefined, smallFastModel: 'x' }), /仅适用于 Claude Code 的 API 模式/);
+  } finally { await f.cleanup(); }
+});
 test('concurrent managers serialize Hub updates without dropping providers', async () => {
   const f = await fixture();
   try {

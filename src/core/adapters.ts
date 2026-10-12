@@ -31,9 +31,12 @@ export function codexLoginMaterial(authText: string | null): boolean {
 // This literal is only a fallback marker; it is not an env var name and not a command.
 export const piApiKeyPlaceholder = 'managed-by-miswitch:auth.json';
 const managedPattern = /^miswitch_[a-f0-9]{32}$/;
+// Model alias routes are provider-specific IDs. ANTHROPIC_SMALL_FAST_MODEL is the legacy name of the
+// haiku route and is cleared the same way cc-switch does (src/components/providers/forms/hooks/useModelState.ts).
 export const claudeEnvKeys = [
   'ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_MODEL',
   'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
   'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_OAUTH_TOKEN'
 ];
 // Input order matches resolvePaths(). Unknown fields survive semantic merge.
@@ -49,6 +52,8 @@ export function patchProvider(p: Provider, originals: (string | null)[], key?: s
       env.ANTHROPIC_BASE_URL = p.baseUrl;
       env[p.claudeAuth === 'bearer' ? 'ANTHROPIC_AUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = key;
       env.ANTHROPIC_MODEL = p.model;
+      // Without it, background tasks request Anthropic's default haiku ID, which gateways often lack.
+      if (p.smallFastModel !== undefined) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = p.smallFastModel;
     }
     return [asJson(settings)];
   }

@@ -37,6 +37,8 @@ npm run test:container  # 在 Docker 容器内用真实 Claude Code / Codex / Pi
 
 Claude Code 使用 Anthropic Messages；Codex 使用 Responses；Pi 可选择 Anthropic Messages、OpenAI Responses 或 Chat Completions。仅有“OpenAI 兼容”描述不代表端点适合所有应用。
 
+Claude Code 的后台任务和 haiku 别名默认请求 Anthropic 的 Haiku 模型 ID；网关没有该模型时，在配置里填写“小型／快速模型”（写入 `ANTHROPIC_DEFAULT_HAIKU_MODEL`）。
+
 “官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Pi 会检查指定 Provider 已有 OAuth 记录。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
 
 Codex 的写法与 cc-switch 相同：第三方路由写在 `model_providers.custom` 并以 `experimental_bearer_token` 保存密钥，官方路由移除 `model_provider`；两个工具可以接管同一份配置。

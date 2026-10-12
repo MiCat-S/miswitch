@@ -115,6 +115,7 @@ scripts/
 | `claudeAuth` | `api-key / bearer` | Anthropic 官方 API 与 Bearer 网关区分 |
 | `loginProvider` | Pi 登录模式使用 | `auth.json` 中已有 OAuth Provider ID |
 | `notes` | 最大 2000 字符 | 用户备注 |
+| `smallFastModel` | 可选，最大 200 字符，仅 Claude API 模式 | 写入 `ANTHROPIC_DEFAULT_HAIKU_MODEL`：haiku 别名与后台任务使用的模型 |
 | `contextWindow` / `autoCompactTokenLimit` | 可选正整数，仅 Codex | 写入 `model_context_window` / `model_auto_compact_token_limit` |
 | `updatedAt` / `appliedAt` | UTC ISO8601 | UI 按用户本地时区显示 |
 | `active.*.fingerprint` | SHA-256 | 本工具管理字段的规范化 JSON 摘要；状态判定以此为准，CLI 自行重排文件不算漂移 |
@@ -155,7 +156,7 @@ scripts/
 
 | 对象 | 默认路径 | API 写入 | 保留 / 不操作 |
 | --- | --- | --- | --- |
-| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、API Key 或 Bearer token、`env.ANTHROPIC_MODEL`、`model` | 保留 hooks、permissions 和其他 env；不写 `~/.claude.json` 或私有登录数据 |
+| Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、API Key 或 Bearer token、`env.ANTHROPIC_MODEL`、可选 `env.ANTHROPIC_DEFAULT_HAIKU_MODEL`、`model` | 保留 hooks、permissions 和其他 env；不写 `~/.claude.json` 或私有登录数据 |
 | Codex CLI | `~/.codex/config.toml` | 根 `model`、`model_provider`（官方模式移除）、可选上下文键和 `model_providers.custom` | 保留 MCP、projects、其他 Provider |
 | Codex CLI | `~/.codex/auth.json` | 不改写；只加锁、备份、校验，判断 `requires_openai_auth` | 登录、续期交给 Codex；恢复备份时一并恢复 |
 | Pi Coding Agent | `~/.pi/agent/models.json` | 唯一 Provider 的 `baseUrl`、`api`、`apiKey` 占位、`authHeader`、`models[].id` | 保留其他 Provider |
@@ -179,7 +180,9 @@ API 模式示例：
 }
 ```
 
-选择 Bearer 鉴权时写 `ANTHROPIC_AUTH_TOKEN`，不会同时留下 `ANTHROPIC_API_KEY`。切换时清除用户文件中的冲突键：旧 API Key、Bearer、Base URL、模型和默认模型路由、Bedrock / Vertex / Foundry 开关、`CLAUDE_CODE_OAUTH_TOKEN`。这些改动都有原文备份，其他环境变量保持原值。检测到 `apiKeyHelper` 时直接停止，避免无声删除用户的动态鉴权设置。
+选择 Bearer 鉴权时写 `ANTHROPIC_AUTH_TOKEN`，不会同时留下 `ANTHROPIC_API_KEY`。切换时清除用户文件中的冲突键：旧 API Key、Bearer、Base URL、模型和各别名的模型路由（haiku / sonnet / opus / fable，以及 haiku 的旧名 `ANTHROPIC_SMALL_FAST_MODEL`，与 cc-switch 相同）、Bedrock / Vertex / Foundry 开关、`CLAUDE_CODE_OAUTH_TOKEN`。`CLAUDE_CODE_SUBAGENT_MODEL` 接受别名，属于用户偏好，保留不动。
+
+网关通常只提供少数模型 ID。Claude Code 的后台任务和 haiku 别名走 `ANTHROPIC_DEFAULT_HAIKU_MODEL`，未设置时请求 Anthropic 默认的 Haiku ID（[模型配置](https://code.claude.com/docs/en/model-config)）。Provider 的“小型／快速模型”填写后写入该变量，并作为管理字段计入漂移判定；留空则不写。容器内用 Claude Code 2.1.296 验证：`claude -p --model haiku` 请求的正是该字段的模型 ID。这些改动都有原文备份，其他环境变量保持原值。检测到 `apiKeyHelper` 时直接停止，避免无声删除用户的动态鉴权设置。
 
 登录模式保留 CLI 自己管理的登录，仅清理本文件 API 路由并设置默认模型。它不意味着登录已完成，也不读取钥匙串里的账号信息。系统环境、项目级配置、profiles / federation、gateway session 和 managed settings 仍可能有更高优先级。
 
@@ -333,7 +336,7 @@ App
  ├─ 应用导航：Claude / ChatGPT / Pi
  ├─ 本地状态：是否发现文件、hash 变化、刷新
  ├─ ProviderCard[]：当前写入 / 文件变化 / 重新启用
- ├─ ProviderEditor：名称、模式、URL、密钥、协议、模型、备注
+ ├─ ProviderEditor：名称、模式、URL、密钥、协议、模型、小型／快速模型（Claude）、备注
  ├─ Modal：编辑或删除 / 恢复确认
  └─ 历史备份：时间、文件、恢复动作
 ```
@@ -397,7 +400,7 @@ interface Bridge {
 
 已经验证核心逻辑、真实文件读写和实际 Electron 窗口 / preload IPC / React 表单流程。所有测试使用临时路径与合成密钥。
 
-`npm run test:container`（`tests/container/`）在 Docker 内安装固定版本的 Claude Code 2.1.296、Codex CLI 0.162.1、Pi 0.73.1，用 `Manager` 写入配置后以 `claude -p`、`codex exec`、`pi -p` 请求容器内的模拟 API（`mock-server.mjs`，支持三种协议的流式与非流式响应），断言实际请求的路径、鉴权头与模型。2026-10-12 结果：Claude x-api-key 与 Bearer、Codex `experimental_bearer_token`、Pi `openai-completions` 与 `anthropic-messages` 共 5 项通过。附加实验：`experimental_bearer_token` 在 `auth.json` 为 API Key 登录或 ChatGPT 登录、`requires_openai_auth` 设或不设的四种组合下都优先生效；`http_headers` 也可行但未采用。
+`npm run test:container`（`tests/container/`）在 Docker 内安装固定版本的 Claude Code 2.1.296、Codex CLI 0.162.1、Pi 0.73.1，用 `Manager` 写入配置后以 `claude -p`、`codex exec`、`pi -p` 请求容器内的模拟 API（`mock-server.mjs`，支持三种协议的流式与非流式响应），断言实际请求的路径、鉴权头与模型。2026-10-12 结果：Claude x-api-key、Bearer 与 haiku 别名走小型／快速模型，Codex `experimental_bearer_token` 与保留官方 `auth.json`，Pi `openai-completions` 与 `anthropic-messages`，共 7 项通过。附加实验：`experimental_bearer_token` 在 `auth.json` 为 API Key 登录或 ChatGPT 登录、`requires_openai_auth` 设或不设的四种组合下都优先生效；`http_headers` 也可行但未采用。
 
 没有用真实密钥请求供应商，也没有修改真实 CLI 配置或验证真实账号；Windows/Linux 安装运行、完整 CLI 协议联调、安装包签名/公证与客户端版本矩阵需在发布前进行。当前没有将一个运行中的 OAuth 会话强制切为其他账号的能力。
 

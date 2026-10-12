@@ -12,6 +12,8 @@ export const providerSchema = z.object({
   claudeAuth: z.enum(['api-key', 'bearer']).default('api-key'),
   loginProvider: z.string().regex(/^[a-zA-Z0-9_-]+$/).max(100).default('anthropic'),
   notes: z.string().max(2000).default(''),
+  // Claude API mode only: written as ANTHROPIC_DEFAULT_HAIKU_MODEL (haiku alias and background tasks).
+  smallFastModel: z.string().trim().min(1).max(200).optional(),
   // Codex only: written as model_context_window / model_auto_compact_token_limit.
   contextWindow: z.number().int().positive().max(100_000_000).optional(),
   autoCompactTokenLimit: z.number().int().positive().max(100_000_000).optional(),
@@ -30,6 +32,7 @@ export const providerSchema = z.object({
     if (p.app === 'chatgpt' && p.protocol !== 'openai-responses') issue('Codex 需要 OpenAI Responses 协议');
     if (p.apiKey && (/\s/.test(p.apiKey) || /^[!$]/.test(p.apiKey))) issue('API Key 必须为字面密钥，不得含空白或命令/环境变量表达式');
   }
+  if (p.smallFastModel !== undefined && (p.app !== 'claude' || p.mode !== 'api')) issue('小型／快速模型仅适用于 Claude Code 的 API 模式');
   if (p.app !== 'chatgpt' && (p.contextWindow !== undefined || p.autoCompactTokenLimit !== undefined)) issue('上下文窗口与自动压缩阈值仅适用于 Codex');
   if (p.contextWindow !== undefined && p.autoCompactTokenLimit !== undefined && p.autoCompactTokenLimit > p.contextWindow) issue('自动压缩阈值不能大于上下文窗口');
 });

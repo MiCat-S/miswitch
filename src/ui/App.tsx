@@ -23,6 +23,7 @@ function ProviderEditor({ app, provider, busy, error, onClose, onSave }: { app: 
       claudeAuth: String(data.get('claudeAuth') ?? 'api-key') as 'api-key' | 'bearer',
       loginProvider: String(data.get('loginProvider') ?? 'anthropic'),
       notes: String(data.get('notes')), apiKey: String(data.get('apiKey') ?? '') || undefined,
+      smallFastModel: String(data.get('smallFastModel') ?? '').trim() || undefined,
       contextWindow: Number(data.get('contextWindow')) || undefined, autoCompactTokenLimit: Number(data.get('autoCompactTokenLimit')) || undefined });
   };
   return <Modal title={`${provider ? '编辑' : '添加'} ${names[app]} 配置`} onClose={() => { if (!busy) onClose(); }}>
@@ -45,6 +46,10 @@ function ProviderEditor({ app, provider, busy, error, onClose, onSave }: { app: 
       {mode === 'login' ? <p className="hint">保留现有登录凭据。请先在目标 CLI 中登录，再用该配置恢复官方路由。保存登录模式后，已保存的 API Key 会被移除。</p> : null}
       {mode === 'login' && app === 'pi' ? <label>已登录的 Pi Provider ID<input name="loginProvider" required defaultValue={provider?.loginProvider ?? 'anthropic'} placeholder="与 pi /login 保存的 Provider ID 相同" /></label> : null}
       <label>默认 Model<input name="model" required maxLength={200} defaultValue={provider?.model} placeholder="输入供应商支持的精确模型 ID" /></label>
+      {app === 'claude' ? <fieldset hidden={mode !== 'api'} disabled={mode !== 'api'} aria-hidden={mode !== 'api'}>
+        <label>小型／快速模型（可选）<input name="smallFastModel" maxLength={200} defaultValue={provider?.smallFastModel} placeholder="写入 ANTHROPIC_DEFAULT_HAIKU_MODEL" /></label>
+        <p className="hint">Claude Code 的后台任务和 haiku 别名使用该模型；留空时请求 Anthropic 默认的 Haiku 模型 ID，网关没有该模型时请填写。</p>
+      </fieldset> : null}
       {app === 'chatgpt' ? <div className="pair">
         <label>上下文窗口（可选）<input name="contextWindow" type="number" min={1} step={1} defaultValue={provider?.contextWindow} placeholder="model_context_window，如 1000000" /></label>
         <label>自动压缩阈值（可选）<input name="autoCompactTokenLimit" type="number" min={1} step={1} defaultValue={provider?.autoCompactTokenLimit} placeholder="model_auto_compact_token_limit" /></label>
@@ -60,7 +65,7 @@ function ProviderCard({ p, selected, drift, busy, onActivate, onEdit, onRemove }
   return <article className={`provider-card ${selected ? 'selected' : ''}`}>
     <div className="card-top"><span className={`app-icon ${p.app}`}>{initials[p.app]}</span><span className={`badge ${selected && !drift ? 'green' : ''}`}>{selected ? drift ? '管理字段已变更' : '当前写入' : p.mode === 'login' ? '官方登录' : 'API'}</span></div>
     <h2>{p.name}</h2><p className="endpoint">{p.mode === 'login' ? '使用 CLI 已有登录凭据' : p.baseUrl}</p>
-    <dl><div><dt>Model</dt><dd>{p.model}</dd></div><div><dt>鉴权</dt><dd>{p.mode === 'login' ? '由 CLI 管理，未验证' : p.hasKey ? '••••••••' : '未设置'}</dd></div></dl>
+    <dl><div><dt>Model</dt><dd>{p.model}</dd></div>{p.smallFastModel ? <div><dt>小型／快速模型</dt><dd>{p.smallFastModel}</dd></div> : null}<div><dt>鉴权</dt><dd>{p.mode === 'login' ? '由 CLI 管理，未验证' : p.hasKey ? '••••••••' : '未设置'}</dd></div></dl>
     <p className="notes">{p.notes || '暂无备注'}</p>
     <div className="card-actions"><button className={selected && !drift ? '' : 'primary'} disabled={busy} onClick={onActivate}>{selected && !drift ? '重新写入' : '启用配置'}</button><button disabled={busy} onClick={onEdit}>编辑</button><button className="danger-text" disabled={busy || selected} onClick={onRemove}>删除</button></div>
   </article>;
