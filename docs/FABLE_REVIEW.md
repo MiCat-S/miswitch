@@ -35,6 +35,11 @@ npm audit --omit=dev
 - CLI 重排 / 追加无关字段仍为 `written`（标记 reformatted）；修改管理字段为 `drift`。
 - 损坏的备份文件被跳过并产生警告，不阻塞 snapshot 与恢复。
 - `publicError` 只转发 PublicError 与 Zod custom 消息；内建 Zod、parser、文件系统错误不回显输入。
+- 4 MB 紧凑 JSON 格式化后超过 8 MiB 时在写入前拒绝，目标、备份、日志均不变；4.2 MiB 合法配置的 8.8 MB 备份与由其构造的日志可读并可恢复。
+- 只含部分文件的备份被跳过且不可恢复；旧版 Codex 单文件备份按显式规则恢复。
+- 无 fingerprint 的旧版 active 记录按原文比较，不报漂移。
+- 桌面 smoke：模式来回切换保留草稿；100 字符名称 + 2000 字符备注在 840 px 不横向溢出；200% 缩放不横向溢出。
+- 容器 PASS 同时要求匹配请求与 CLI 退出码 0、未逾时。
 - Compare-before-replace、临时文件清理、链接拒绝。
 - 与 Pi 官方 auth storage 相同的锁约定。
 - 目录环境覆盖。
@@ -44,6 +49,8 @@ npm audit --omit=dev
 本次交付验证记录（2026-10-12）：核心回归 22 项通过；TypeScript 检查、Vite / Electron bundle 构建通过；真实 Electron smoke 通过（含校验消息到达表单的检查）；运行依赖审计 0 vulnerabilities。所有密钥均为测试用合成值。
 
 2026-10-12 审查后修正：校验消息转发（`src/core/errors.ts`）、语意漂移判定（`managedFingerprint`）、待决日志状态与“放弃日志”动作（`resolveJournal`）、损坏备份跳过。
+
+2026-10-12 第二轮审核（`docs/CODEX_REVIEW_2026-10-12.md`）后修正：R1 分级大小上限与写前预检，R2 备份完整集合验证，R3 表单草稿保留，R4 长文本换行，R5 窄视口布局，R6 旧版记录相容判定，R7 文字对比 token。P3 中已处理：loading/error/empty 分离、登录卡片文案、容器 PASS 判定；备份 I/O 的 metadata 分离与 CSS 作用域整理未处理。
 
 2026-10-12 容器联调（`npm run test:container`，Docker via colima）：真实 Claude Code 2.1.296、Codex 0.162.1、Pi 0.73.1 对模拟 API 的请求 5/5 符合预期。联调发现并修正：Pi 0.73 要求自定义 Provider 在 `models.json` 内有 `apiKey`，否则整个文件拒绝加载；现写入占位字面量，真实密钥仍只在 `auth.json`，Pi 实际发送的是 `auth.json` 的密钥。对照 cc-switch 模板后调整：Codex Provider ID 固定为 `custom`；官方模式移除 `model_provider` 并把 `custom` 表置为 dormant；`requires_openai_auth = true` 仅在 `auth.json` 含登录凭据时写入；新增可选 `contextWindow` / `autoCompactTokenLimit`；`auth.json` 纳入目标文件（加锁、备份、校验、不改写）。容器案例扩展为“官方 `auth.json` 存在时第三方 token 优先、`auth.json` 未变、上下文键生效”，6/6 通过。
 
