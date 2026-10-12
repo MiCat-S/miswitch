@@ -61,13 +61,14 @@ function ProviderEditor({ app, provider, busy, error, onClose, onSave }: { app: 
     </fieldset></form>
   </Modal>;
 }
-function ProviderCard({ p, selected, drift, busy, onActivate, onEdit, onRemove }: { p: PublicProvider; selected: boolean; drift: boolean; busy: boolean; onActivate(): void; onEdit(): void; onRemove(): void }) {
+function ProviderCard({ p, selected, drift, edited, busy, onActivate, onEdit, onRemove }: { p: PublicProvider; selected: boolean; drift: boolean; edited: boolean; busy: boolean; onActivate(): void; onEdit(): void; onRemove(): void }) {
+  const current = selected && !drift && !edited;
   return <article className={`provider-card ${selected ? 'selected' : ''}`}>
-    <div className="card-top"><span className={`app-icon ${p.app}`}>{initials[p.app]}</span><span className={`badge ${selected && !drift ? 'green' : ''}`}>{selected ? drift ? '管理字段已变更' : '当前写入' : p.mode === 'login' ? '官方登录' : 'API'}</span></div>
+    <div className="card-top"><span className={`app-icon ${p.app}`}>{initials[p.app]}</span><span className={`badge ${current ? 'green' : ''}`}>{selected ? drift ? '管理字段已变更' : edited ? '已编辑，待重新写入' : '当前写入' : p.mode === 'login' ? '官方登录' : 'API'}</span></div>
     <h2>{p.name}</h2><p className="endpoint">{p.mode === 'login' ? '使用 CLI 已有登录凭据' : p.baseUrl}</p>
     <dl><div><dt>Model</dt><dd>{p.model}</dd></div>{p.smallFastModel ? <div><dt>小型／快速模型</dt><dd>{p.smallFastModel}</dd></div> : null}<div><dt>鉴权</dt><dd>{p.mode === 'login' ? '由 CLI 管理，未验证' : p.hasKey ? '••••••••' : '未设置'}</dd></div></dl>
     <p className="notes">{p.notes || '暂无备注'}</p>
-    <div className="card-actions"><button className={selected && !drift ? '' : 'primary'} disabled={busy} onClick={onActivate}>{selected && !drift ? '重新写入' : '启用配置'}</button><button disabled={busy} onClick={onEdit}>编辑</button><button className="danger-text" disabled={busy || selected} onClick={onRemove}>删除</button></div>
+    <div className="card-actions"><button className={current ? '' : 'primary'} disabled={busy} onClick={onActivate}>{selected && !drift ? '重新写入' : '启用配置'}</button><button disabled={busy} onClick={onEdit}>编辑</button><button className="danger-text" disabled={busy || selected} onClick={onRemove}>删除</button></div>
   </article>;
 }
 export function App() {
@@ -85,10 +86,10 @@ export function App() {
     if (bridge) void bridge.snapshot().then(s => { if (mounted) setSnapshot(s); }).catch(() => { if (mounted) { setLoadFailed(true); setError('读取失败，请检查本机配置文件与目录权限。'); } });
     return () => { mounted = false; };
   }, [bridge]);
-  const act = async (operation: () => Promise<Snapshot>, message: string, closeEditor = false) => {
+  const act = async (operation: () => Promise<Snapshot>, message: string | ((s: Snapshot) => string), closeEditor = false) => {
     if (busy) return;
     setBusy(true); setError(''); setNotice('');
-    try { setSnapshot(await operation()); setNotice(message); if (closeEditor) setEditor(undefined); setConfirmation(undefined); }
+    try { const next = await operation(); setSnapshot(next); setNotice(typeof message === 'string' ? message : message(next)); if (closeEditor) setEditor(undefined); setConfirmation(undefined); }
     catch (e) { setError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : '操作失败'); }
     finally { setBusy(false); }
   };
@@ -100,7 +101,7 @@ export function App() {
   // Every write is refused by the main process while a conflicting journal exists; mirror that in the controls.
   const blocked = busy || !!pending;
   const loading = !!bridge && !snapshot && !loadFailed;
-  const statusText = loading ? '正在读取本地配置…' : loadFailed ? '无法读取本地配置' : diagnosis?.state === 'written' ? (diagnosis.reformatted ? '配置已写入（文件已被重排）' : '配置已写入')
+  const statusText = loading ? '正在读取本地配置…' : loadFailed ? '无法读取本地配置' : diagnosis?.state === 'written' ? (diagnosis.edited ? '已写入编辑前的配置' : diagnosis.reformatted ? '配置已写入（文件已被重排）' : '配置已写入')
     : diagnosis?.state === 'drift' ? '管理字段已被外部修改' : diagnosis?.initialized ? '检测到本地配置' : '尚未检测到配置文件';
   return <div className="layout">
     <aside><div className="brand"><span>M</span>MiSwitch</div><p className="sidebar-label">WORKSPACE</p><nav aria-label="应用选择">{(['claude', 'chatgpt', 'pi'] as AppId[]).map(id => <button key={id} aria-current={id === app ? 'page' : undefined} className={id === app ? 'nav-active' : ''} disabled={busy || !!editor || !!confirmation} onClick={() => { setApp(id); setError(''); setNotice(''); }}><span className={`app-icon small ${id}`}>{initials[id]}</span><span>{names[id]}<small>{subtitles[id]}</small></span></button>)}</nav><div className="local-only"><span className="dot" /> 本地配置管理<small>三个应用 · 一个入口</small></div></aside>
@@ -116,15 +117,16 @@ export function App() {
       {snapshot?.warnings.map(w => <div className="alert" key={w} role="status">{w}</div>)}
       {notice ? <div className="success" role="status">✓ {notice}</div> : null}
       {error && !editor && !confirmation ? <div className="error alert" role="alert">{error}</div> : null}
-      <section className="status-panel" aria-label="本地状态"><div><span className={`dot ${diagnosis?.state === 'drift' ? 'amber' : ''}`} /><strong>{statusText}</strong><span>下一次启动生效</span></div><p>{diagnosis?.paths.join(' · ') || '正在读取配置路径…'}</p><button disabled={!bridge || busy || loading} onClick={() => void act(() => bridge!.snapshot(), '本地状态已刷新')}>{busy ? '处理中…' : '刷新检测 ↻'}</button></section>
+      <section className="status-panel" aria-label="本地状态"><div><span className={`dot ${diagnosis?.state === 'drift' || diagnosis?.edited ? 'amber' : ''}`} /><strong>{statusText}</strong><span>下一次启动生效</span></div><p>{diagnosis?.paths.join(' · ') || '正在读取配置路径…'}</p><button disabled={!bridge || busy || loading} onClick={() => void act(() => bridge!.snapshot(), '本地状态已刷新')}>{busy ? '处理中…' : '刷新检测 ↻'}</button></section>
       <div className="section-heading"><h2>供应商配置 <span>{providers.length}</span></h2><span>切换前自动备份</span></div>
-      <section className="provider-grid" aria-label="供应商列表">{providers.map(p => <ProviderCard key={p.id} p={p} selected={selected === p.id} drift={diagnosis?.state === 'drift'} busy={blocked} onActivate={() => void act(() => bridge!.activate(p.id), `已写入「${p.name}」；请在目标 CLI 中验证并启动新会话。`)} onEdit={() => { setError(''); setEditor({ provider: p }); }} onRemove={() => setConfirmation({ title: '删除配置', body: `删除「${p.name}」？历史备份将保留。`, execute: () => void act(() => bridge!.remove(p.id), '配置已删除') })} />)}
+      <section className="provider-grid" aria-label="供应商列表">{providers.map(p => <ProviderCard key={p.id} p={p} selected={selected === p.id} drift={diagnosis?.state === 'drift'} edited={!!diagnosis?.edited} busy={blocked} onActivate={() => void act(() => bridge!.activate(p.id), `已写入「${p.name}」；请在目标 CLI 中验证并启动新会话。`)} onEdit={() => { setError(''); setEditor({ provider: p }); }} onRemove={() => setConfirmation({ title: '删除配置', body: `删除「${p.name}」？历史备份将保留。`, execute: () => void act(() => bridge!.remove(p.id), '配置已删除') })} />)}
       {loading ? <p className="loading" role="status">正在读取本地配置…</p> : loadFailed ? null : providers.length === 0 ? <div className="empty"><span>＋</span><h2>添加第一组配置</h2><p>官方 API、自定义网关或已有登录，随时切换。</p></div> : null}</section>
       <details className="diagnostics"><summary>本地诊断与注意事项</summary>{diagnosis?.warnings.map(w => <p key={w}>{w}</p>)}<p>未初始化时，启用 API 配置将创建所需目录。官方登录请先运行目标 CLI 的登录流程。</p></details>
       <section className="backup-panel"><div className="section-heading"><h2>历史备份 <span>{backups.length}</span></h2><span>每个应用保留最近 10 次</span></div>{backups.length === 0 ? <p className="hint">第一次切换后，原配置会出现在这里。</p> : backups.map(b => <div className="backup-row" key={b.id}><div><strong>{new Date(b.createdAt).toLocaleString()}</strong><small>{b.files.join(' · ')}</small></div><button disabled={blocked} onClick={() => setConfirmation({ title: '恢复历史备份', body: '恢复将覆盖当前应用配置，并先备份当前文件；恢复后重新检测状态。', execute: () => void act(() => bridge!.restore(b.id), '历史配置已恢复；当前标记已清除，请在目标 CLI 中验证。') })}>恢复</button></div>)}</section>
       <footer>MiSwitch · 本机明文存储 · Claude Code / Codex CLI / Pi Coding Agent</footer>
     </main>
-    {editor ? <ProviderEditor key={editor.provider?.id ?? app} app={app} provider={editor.provider} busy={busy} error={error} onClose={() => { setEditor(undefined); setError(''); }} onSave={input => void act(() => bridge!.save(input), '配置已保存；点击启用配置后写入目标工具。', true)} /> : null}
+    {editor ? <ProviderEditor key={editor.provider?.id ?? app} app={app} provider={editor.provider} busy={busy} error={error} onClose={() => { setEditor(undefined); setError(''); }} onSave={input => void act(() => bridge!.save(input), next => !input.id || input.id !== selected ? '配置已保存；点击启用配置后写入目标工具。'
+      : next.diagnostics.find(d => d.app === input.app)?.edited ? '配置已保存；目标工具仍使用编辑前的设置，点击重新写入后生效。' : '配置已保存；写入目标工具的字段没有变化。', true)} /> : null}
     {confirmation ? <Modal title={confirmation.title} onClose={() => { if (!busy) { setConfirmation(undefined); setError(''); } }}><p>{confirmation.body}</p>{error ? <p role="alert" className="error">{error}</p> : null}<div className="dialog-actions"><button disabled={busy} onClick={() => { setConfirmation(undefined); setError(''); }}>取消</button><button disabled={busy} className="primary" onClick={confirmation.execute}>{busy ? '处理中…' : '确认'}</button></div></Modal> : null}
   </div>;
 }

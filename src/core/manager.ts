@@ -2,7 +2,7 @@ import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { readdir, unlink } from 'node:fs/promises';
 import { z } from 'zod';
-import { patchProvider, claudeEnvKeys, jsonObject, asJson, managedFingerprint } from './adapters';
+import { patchProvider, claudeEnvKeys, jsonObject, asJson, managedFingerprint, providerDefinition } from './adapters';
 import { PENDING_MESSAGE, PublicError } from './errors';
 import { ARCHIVE_LIMIT, TARGET_LIMIT, atomicWrite, byteLength, ensureDirectory, hash, readText, replaceText, syncDirectory, withLocks } from './files';
 import type { Paths } from './paths';
@@ -42,7 +42,7 @@ export class Manager {
     }
     for (const [app, record] of Object.entries(hub.active)) {
       appSchema.parse(app);
-      z.object({ providerId: uuid, appliedAt: z.string().datetime(), fingerprint: z.string().optional(), hashes: z.record(z.string(), z.string()) }).parse(record);
+      z.object({ providerId: uuid, appliedAt: z.string().datetime(), fingerprint: z.string().optional(), definition: z.string().optional(), hashes: z.record(z.string(), z.string()) }).parse(record);
     }
     return hub;
   }
@@ -190,17 +190,21 @@ export class Manager {
       const current = unreadable ? null : managedFingerprint(app, originals);
       const written = !!record && (legacy ? bytesMatch : current !== null && hash(current) === record.fingerprint);
       const state = !record ? 'none' as const : written ? 'written' as const : 'drift' as const;
+      // Records without `definition` were written by versions that cleared the record on every edit.
+      const provider = record && hub.providers.find(p => p.id === record.providerId);
+      const edited = !!record?.definition && !!provider && hash(providerDefinition(provider)) !== record.definition;
       const warnings: string[] = ['配置写入仅保证文件同步；运行中会话、项目配置与管理员策略可能覆盖选择。'];
       if (unreadable) warnings.push('部分配置无法读取，请检查符号链接、文件类型和目录权限。');
       if (legacy) warnings.push('当前写入记录来自旧版本，按原文逐字节比较；重新启用后改为字段级判定。');
       if (state === 'written' && !bytesMatch) warnings.push('目标文件已被其他程序重写（例如 CLI 自行保存设置），但本工具管理的字段未变。');
       if (state === 'drift') warnings.push('本工具管理的字段已被外部修改，或文件无法解析；重新启用会先备份再覆盖这些字段。');
+      if (edited) warnings.push('当前配置在写入后已被编辑，目标文件仍是编辑前的设置；点击“重新写入”后生效。');
       const variables = app === 'claude' ? [...claudeEnvKeys, 'ANTHROPIC_PROFILE', 'ANTHROPIC_FEDERATION_RULE_ID', 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST'] : app === 'chatgpt' ? ['OPENAI_API_KEY', 'OPENAI_BASE_URL'] : ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'];
       const present = variables.filter(key => this.env[key]);
       if (present.length) warnings.push(`本进程检测到环境变量：${present.join('、')}。其他终端环境需单独检查。`);
       if (app === 'claude') warnings.push('官方登录由 Claude Code 管理，请运行 /status 验证；API Key 首次使用可能需要 CLI 批准。');
       if (app === 'chatgpt') warnings.push('API 模式按 cc-switch 模板写入 model_providers.custom 与 experimental_bearer_token，密钥明文保存在 config.toml；auth.json 只备份不改写，恢复备份会一并恢复当时的登录凭据。');
-      return { app, paths, initialized: originals.some(s => s !== null), state, reformatted: state === 'written' && !bytesMatch, warnings };
+      return { app, paths, initialized: originals.some(s => s !== null), state, reformatted: state === 'written' && !bytesMatch, edited, warnings };
     }));
     const { list, skipped } = await this.backups();
     const warnings = skipped.length ? [`有 ${skipped.length} 个备份文件无法解析，已跳过：${skipped.join('、')}`] : [];
@@ -216,8 +220,10 @@ export class Manager {
       const old = hub.providers.find(p => p.id === id);
       if (input.id && !old) throw new PublicError('配置不存在');
       if (old && old.app !== input.app) throw new PublicError('不能跨应用修改配置');
-      // Editing metadata does not write target files; clear the indicator until explicit activation.
-      if (hub.active[input.app]?.providerId === id) delete hub.active[input.app];
+      // Editing does not write target files. The record stays because the target still holds what was
+      // written, which also keeps the provider undeletable; snapshot() reports the edit by comparing definitions.
+      const record = hub.active[input.app];
+      if (old && record?.providerId === id && record.definition === undefined) record.definition = hash(providerDefinition(old));
       const { apiKey, ...rest } = input;
       const storedKey = input.mode === 'login' ? undefined : apiKey || old?.apiKey;
       if (input.mode === 'api' && !storedKey) throw new PublicError('API 模式需要密钥');
@@ -255,7 +261,7 @@ export class Manager {
         // Stored as a hash: the fingerprint text contains the key, and `active` is returned to the renderer.
         const fingerprint = managedFingerprint(provider.app, after);
         if (fingerprint === null) throw new PublicError('切换后的配置验证失败');
-        hub.active[provider.app] = { providerId: id, appliedAt: new Date().toISOString(), fingerprint: hash(fingerprint), hashes: Object.fromEntries(paths.map((path, i) => [path, hash(after[i])])) };
+        hub.active[provider.app] = { providerId: id, appliedAt: new Date().toISOString(), fingerprint: hash(fingerprint), definition: hash(providerDefinition(provider)), hashes: Object.fromEntries(paths.map((path, i) => [path, hash(after[i])])) };
         const entries = paths.map((path, i) => ({ path, before: before[i], after: after[i] }));
         entries.push({ path: this.hubPath, before: beforeHub, after: asJson(hub) });
         await this.transaction(provider.app, entries, () => { hubCheck(); targetCheck(); });

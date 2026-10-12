@@ -39,6 +39,11 @@ export const claudeEnvKeys = [
   'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
   'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_OAUTH_TOKEN'
 ];
+// The provider fields patchProvider() reads. Notes never reach a target file; the name only does for Codex.
+export function providerDefinition(p: Provider): string {
+  const { notes, updatedAt, name, ...rest } = p;
+  return canonical(p.app === 'chatgpt' ? { ...rest, name } : rest);
+}
 // Input order matches resolvePaths(). Unknown fields survive semantic merge.
 export function patchProvider(p: Provider, originals: (string | null)[], key?: string): (string | null)[] {
   if (p.app === 'claude') {

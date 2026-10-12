@@ -65,14 +65,16 @@ app.on('browser-window-created', (_event, window) => {
         return result;
       })()`);
       assert.deepEqual(draft, { hiddenWhileLogin: true, url: 'https://unsaved.test', keyLength: 16, small: 'smoke-small' });
-      // Long user text and 200 % zoom of the minimum window must not widen the page.
-      await window.webContents.executeJavaScript(`(async () => {
+      // Long user text and 200 % zoom of the minimum window must not widen the page. Changing the model of the
+      // active provider keeps it marked as written, flagged as edited until it is written again.
+      const editedBadge = await window.webContents.executeJavaScript(`(async () => {
         const s = await window.miswitch.snapshot(); const p = s.providers[0];
         await window.miswitch.save({ id: p.id, app: 'claude', name: 'A'.repeat(100), mode: 'api', baseUrl: 'https://example.test', model: 'model'.repeat(40), protocol: 'anthropic-messages', notes: 'X'.repeat(2000) });
         document.querySelector('.status-panel button').click();
-        for (let i = 0; i < 200; i++) { if (document.querySelector('.provider-card h2')?.textContent.length === 100 && !document.querySelector('header .primary').disabled) return; await new Promise(r => requestAnimationFrame(r)); }
+        for (let i = 0; i < 200; i++) { if (document.querySelector('.provider-card h2')?.textContent.length === 100 && !document.querySelector('header .primary').disabled) return document.querySelector('.provider-card .badge').textContent; await new Promise(r => requestAnimationFrame(r)); }
         throw new Error('long text refresh timeout');
       })()`);
+      assert.equal(editedBadge, '已编辑，待重新写入');
       const measure = () => window.webContents.executeJavaScript(`({ viewport: innerWidth, page: document.documentElement.scrollWidth, card: document.querySelector('.provider-card').scrollWidth, cardBox: document.querySelector('.provider-card').clientWidth })`);
       window.setSize(840, 600); await new Promise(r => setTimeout(r, 250));
       const longText = await measure();
@@ -100,7 +102,7 @@ app.on('browser-window-created', (_event, window) => {
         const restored=await window.miswitch.snapshot();
         if(restored.active.claude) throw new Error('Restore kept active marker');
       })()`);
-      console.log('Desktop smoke passed: real preload IPC, React form save, small/fast model, validation message, draft persistence, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
+      console.log('Desktop smoke passed: real preload IPC, React form save, small/fast model, validation message, draft persistence, edited badge, long text, 200% zoom, activation, backup, restore, no snapshot key leak.');
       clearTimeout(timeout);
       window.destroy();
       // Electron may still have cache handles open; test data is synthetic and safe to clean up.

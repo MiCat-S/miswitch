@@ -39,11 +39,13 @@ export const providerSchema = z.object({
 export type ProviderInput = z.input<typeof providerSchema>;
 export type Provider = Omit<z.output<typeof providerSchema>, 'apiKey' | 'id'> & { id: string; apiKey?: string; updatedAt: string };
 export type PublicProvider = Omit<Provider, 'apiKey'> & { hasKey: boolean };
-// `fingerprint` hashes only the fields this tool manages; `hashes` are the exact bytes written.
-export type ActiveRecord = { providerId: string; appliedAt: string; fingerprint?: string; hashes: Record<string, string> };
+// `fingerprint` hashes only the fields this tool manages; `hashes` are the exact bytes written;
+// `definition` hashes the provider fields that reach a target file, as they were when written.
+export type ActiveRecord = { providerId: string; appliedAt: string; fingerprint?: string; definition?: string; hashes: Record<string, string> };
 export type Hub = { version: 1; providers: Provider[]; active: Partial<Record<AppId, ActiveRecord>> };
 // written: managed fields still equal the last write. reformatted: bytes differ but managed fields do not.
-export type Diagnosis = { app: AppId; paths: string[]; initialized: boolean; state: 'none' | 'written' | 'drift'; reformatted: boolean; warnings: string[] };
+// edited: the active provider was edited after it was written, so the target still holds the old settings.
+export type Diagnosis = { app: AppId; paths: string[]; initialized: boolean; state: 'none' | 'written' | 'drift'; reformatted: boolean; edited: boolean; warnings: string[] };
 export type BackupInfo = { id: string; app: AppId; createdAt: string; files: string[] };
 // A journal whose target files were changed by someone else. `valid` is false when pending.json itself cannot be parsed.
 export type PendingInfo = { id: string; app: AppId | null; createdAt: string | null; paths: string[]; conflicts: string[]; valid: boolean };

@@ -93,6 +93,7 @@ scripts/
       "providerId": "10000000-0000-4000-8000-000000000001",
       "appliedAt": "2026-10-12T06:01:00.000Z",
       "fingerprint": "sha256-of-canonical-managed-fields",
+      "definition": "sha256-of-provider-fields-written",
       "hashes": {
         "/absolute/user/config/.codex/config.toml": "sha256-of-written-bytes"
       }
@@ -120,8 +121,9 @@ scripts/
 | `updatedAt` / `appliedAt` | UTC ISO8601 | UI 按用户本地时区显示 |
 | `active.*.fingerprint` | SHA-256 | 本工具管理字段的规范化 JSON 摘要；状态判定以此为准，CLI 自行重排文件不算漂移 |
 | `active.*.hashes` | 路径 → SHA-256 | 上次写入的精确字节；仅用于提示“文件已被重排” |
+| `active.*.definition` | SHA-256，可选 | 写入时 Provider 中会进入目标文件的字段（不含备注、更新时间；名称只对 Codex 计入）；与当前 Provider 不同即“写入后已编辑” |
 
-向前端返回 `PublicProvider` 时剔除 `apiKey`，只返回 `hasKey`。编辑框留空保留旧密钥；已保存的密钥不会自动填回 renderer。修改当前 Provider 的元数据时清除 `active` 标记，提示再次启用，避免把未写入的编辑误显示为已生效。当前已写入的 Provider 必须先切换到另一组后才能删除。
+向前端返回 `PublicProvider` 时剔除 `apiKey`，只返回 `hasKey`。编辑框留空保留旧密钥；已保存的密钥不会自动填回 renderer。编辑当前 Provider 不写目标文件，也不清除 `active` 记录：目标文件里仍是它写入的设置，所以它仍然不能删除，必须先切换到另一组。状态检测比较 `definition` 与当前 Provider，有差异时界面显示“已编辑，待重新写入”，改回原值后提示自动消失；只改备注不算编辑。旧版本写入的记录没有 `definition`，旧版本在编辑时会清除记录，所以现存记录对应的必然是未编辑的 Provider，第一次编辑时用编辑前的 Provider 补写。
 
 备份 Schema：
 
@@ -335,7 +337,7 @@ JSON/TOML 读取、备份失败都发生在目标覆写前。多文件写入中�
 App
  ├─ 应用导航：Claude / ChatGPT / Pi
  ├─ 本地状态：是否发现文件、hash 变化、刷新
- ├─ ProviderCard[]：当前写入 / 文件变化 / 重新启用
+ ├─ ProviderCard[]：当前写入 / 文件变化 / 写入后已编辑 / 重新启用
  ├─ ProviderEditor：名称、模式、URL、密钥、协议、模型、小型／快速模型（Claude）、备注
  ├─ Modal：编辑或删除 / 恢复确认
  └─ 历史备份：时间、文件、恢复动作

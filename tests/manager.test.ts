@@ -143,7 +143,7 @@ test('restore of uninitialized configuration removes only files created by switc
     for (const path of f.paths.targets.pi) assert.equal(await readText(path), null);
   } finally { await f.cleanup(); }
 });
-test('external change marks drift; active delete is refused and editing clears the applied indicator', async () => {
+test('external change marks drift; active delete is refused and editing keeps the record without touching the target', async () => {
   const f = await fixture();
   try {
     const p = await add(f.manager); await f.manager.activate(p.id);
@@ -151,8 +151,41 @@ test('external change marks drift; active delete is refused and editing clears t
     assert.equal((await f.manager.snapshot()).diagnostics[0].state, 'drift');
     await assert.rejects(() => f.manager.remove(p.id));
     const edited = await f.manager.save({ ...input('claude'), id: p.id, model: 'changed-model' });
-    assert.equal(edited.active.claude, undefined);
+    assert.equal(edited.active.claude?.providerId, p.id); assert.equal(edited.diagnostics[0].edited, true);
     assert.equal(await readText(f.paths.targets.claude[0]), '{"external":"change"}');
+  } finally { await f.cleanup(); }
+});
+test('editing the active provider is reported until rewritten; notes and Claude names do not count', async () => {
+  const f = await fixture();
+  try {
+    const p = await add(f.manager); await f.manager.activate(p.id);
+    let s = await f.manager.save({ ...input('claude'), id: p.id, name: 'Renamed', notes: 'only metadata' });
+    assert.equal(s.diagnostics[0].state, 'written'); assert.equal(s.diagnostics[0].edited, false);
+    s = await f.manager.save({ ...input('claude'), id: p.id, model: 'changed-model' });
+    assert.equal(s.diagnostics[0].state, 'written'); assert.equal(s.diagnostics[0].edited, true);
+    assert.ok(s.diagnostics[0].warnings.some(w => w.includes('写入后已被编辑')));
+    await assert.rejects(() => f.manager.remove(p.id), /请先切换/);
+    // Editing back to what was written clears the report without a rewrite.
+    s = await f.manager.save({ ...input('claude'), id: p.id });
+    assert.equal(s.diagnostics[0].edited, false);
+    s = await f.manager.save({ ...input('claude'), id: p.id, model: 'changed-model' });
+    s = await f.manager.activate(p.id);
+    assert.equal(s.diagnostics[0].edited, false); assert.equal(JSON.parse((await readText(f.paths.targets.claude[0]))!).model, 'changed-model');
+    // The Codex name reaches config.toml, so renaming an active Codex provider counts.
+    const codex = await add(f.manager, input('chatgpt', 'Codex')); await f.manager.activate(codex.id);
+    s = await f.manager.save({ ...input('chatgpt', 'Codex renamed'), id: codex.id });
+    assert.equal(s.diagnostics[1].edited, true);
+  } finally { await f.cleanup(); }
+});
+test('an active record written before definitions is backfilled from the unedited provider on its first edit', async () => {
+  const f = await fixture();
+  try {
+    const p = await add(f.manager); await f.manager.activate(p.id);
+    const hubPath = join(f.paths.data, 'hub.json'); const hub = JSON.parse(await readFile(hubPath, 'utf8'));
+    delete hub.active.claude.definition; await writeFile(hubPath, JSON.stringify(hub));
+    assert.equal((await f.manager.snapshot()).diagnostics[0].edited, false);
+    const s = await f.manager.save({ ...input('claude'), id: p.id, baseUrl: 'https://gateway.test' });
+    assert.equal(s.active.claude?.providerId, p.id); assert.equal(s.diagnostics[0].edited, true);
   } finally { await f.cleanup(); }
 });
 test('Claude small/fast model is written to the haiku route; legacy and alias routes are cleared', async () => {
