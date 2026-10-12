@@ -99,7 +99,8 @@ export class Manager {
     await atomicWrite(join(this.backupDir, `${journal.id}.json`), this.encode(backup), null);
     await atomicWrite(this.journalPath, this.encode(journal), null);
     try {
-      for (const e of entries) { check(); await this.write(e.path, e.after, e.before); }
+      // Unchanged entries (e.g. Codex auth.json) stay locked, backed up and verified but are not rewritten.
+      for (const e of entries) { check(); if (e.after !== e.before) await this.write(e.path, e.after, e.before); }
       // Verify before declaring the transaction committed.
       for (const e of entries) if (await readText(e.path) !== e.after) throw new PublicError('切换后的配置验证失败');
       check();
@@ -168,7 +169,7 @@ export class Manager {
       const present = variables.filter(key => this.env[key]);
       if (present.length) warnings.push(`本进程检测到环境变量：${present.join('、')}。其他终端环境需单独检查。`);
       if (app === 'claude') warnings.push('官方登录由 Claude Code 管理，请运行 /status 验证；API Key 首次使用可能需要 CLI 批准。');
-      if (app === 'chatgpt') warnings.push('API 模式使用官方记录的 experimental_bearer_token，密钥会以明文写入 config.toml；登录文件与钥匙串保持由 Codex 管理。');
+      if (app === 'chatgpt') warnings.push('API 模式按 cc-switch 模板写入 model_providers.custom 与 experimental_bearer_token，密钥明文保存在 config.toml；auth.json 只备份不改写，恢复备份会一并恢复当时的登录凭据。');
       return { app, paths, initialized: originals.some(s => s !== null), state, reformatted: state === 'written' && !bytesMatch, warnings };
     }));
     const { list, skipped } = await this.backups();

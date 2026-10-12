@@ -16,7 +16,8 @@ export function resolvePaths(data: string, home = homedir(), env = process.env):
   const pi = dir(env.PI_CODING_AGENT_DIR, join(home, '.pi', 'agent'));
   return { data, home, targets: {
     claude: [join(claude, 'settings.json')],
-    chatgpt: [join(codex, 'config.toml')],
+    // auth.json is locked, backed up and verified but never rewritten by the adapter.
+    chatgpt: [join(codex, 'config.toml'), join(codex, 'auth.json')],
     pi: [join(pi, 'models.json'), join(pi, 'auth.json'), join(pi, 'settings.json')]
   } };
 }

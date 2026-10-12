@@ -50,21 +50,38 @@ test('Claude preserves permissions/hooks/MCP and clears competing user-level pro
     if (process.platform !== 'win32') assert.equal((await stat(f.paths.targets.claude[0])).mode & 0o777, 0o600);
   } finally { await f.cleanup(); }
 });
-test('Codex uses Responses, preserves semantic TOML and OAuth auth.json, retires managed tokens', async () => {
+test('Codex follows the cc-switch template: custom table, bearer token, login-dependent requires_openai_auth, auth.json backed up but untouched', async () => {
   const f = await fixture();
   try {
-    const path = f.paths.targets.chatgpt[0];
-    await f.put(path, 'profile = "work"\n[profiles.work]\nmodel = "old"\n[mcp_servers.keep]\ncommand = "keep"\n[model_providers.other]\nname = "Other"\n');
-    const authPath = join(dirname(path), 'auth.json'); await f.put(authPath, '{"tokens":{"refresh_token":"fake-oauth"}}');
-    const p = await add(f.manager, input('chatgpt')); await f.manager.activate(p.id);
+    const [path, authPath] = f.paths.targets.chatgpt;
+    await f.put(path, 'profile = "work"\nmodel_context_window = 5\n[profiles.work]\nmodel = "old"\n[mcp_servers.keep]\ncommand = "keep"\n[model_providers.other]\nname = "Other"\n[model_providers.miswitch_00000000000000000000000000000000]\nexperimental_bearer_token = "legacy"\n');
+    const authText = '{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"refresh_token":"fake-oauth","access_token":"fake-access"}}';
+    await f.put(authPath, authText);
+    const p = await add(f.manager, { ...input('chatgpt'), contextWindow: 1_000_000, autoCompactTokenLimit: 900_000 });
+    const s = await f.manager.activate(p.id);
     let parsed = TOML.parse((await readText(path))!) as any;
     assert.equal(parsed.profile, undefined); assert.equal(parsed.profiles.work.model, 'old'); assert.equal(parsed.mcp_servers.keep.command, 'keep');
-    assert.equal(parsed.model_providers[parsed.model_provider].wire_api, 'responses');
-    assert.equal(parsed.model_providers[parsed.model_provider].experimental_bearer_token, 'sk-test-only');
+    assert.equal(parsed.model_provider, 'custom');
+    assert.deepEqual(parsed.model_providers.custom, { name: 'Test', base_url: 'https://example.test/v1', wire_api: 'responses', requires_openai_auth: true, experimental_bearer_token: 'sk-test-only' });
+    assert.deepEqual(Object.keys(parsed.model_providers).sort(), ['custom', 'other']);
+    assert.equal(parsed.model_context_window, 1_000_000); assert.equal(parsed.model_auto_compact_token_limit, 900_000);
+    assert.equal(await readText(authPath), authText);
+    const backup = JSON.parse(await readFile(join(f.paths.data, 'backups', `${s.backups[0].id}.json`), 'utf8'));
+    assert.deepEqual(backup.info.files, ['config.toml', 'auth.json']); assert.equal(backup.entries[1].before, authText);
+    assert.equal(s.diagnostics[1].state, 'written');
+    // Login state is part of the managed fingerprint: logging out makes requires_openai_auth stale.
+    await f.put(authPath, '{"auth_mode":"apikey","OPENAI_API_KEY":null,"tokens":{}}');
+    assert.equal((await f.manager.snapshot()).diagnostics[1].state, 'drift');
+    const again = await add(f.manager, { ...input('chatgpt', 'NoLogin'), apiKey: 'sk-two' }); await f.manager.activate(again.id);
+    parsed = TOML.parse((await readText(path))!) as any;
+    assert.equal(parsed.model_providers.custom.requires_openai_auth, undefined); assert.equal(parsed.model_context_window, undefined);
     const login = await add(f.manager, { ...input('chatgpt', 'Login'), mode: 'login', apiKey: undefined });
     await f.manager.activate(login.id); parsed = TOML.parse((await readText(path))!) as any;
-    assert.equal(parsed.model_provider, 'openai'); assert.deepEqual(Object.keys(parsed.model_providers), ['other']);
-    assert.equal(await readText(authPath), '{"tokens":{"refresh_token":"fake-oauth"}}');
+    assert.equal(parsed.model_provider, undefined);
+    assert.deepEqual(parsed.model_providers.custom, { name: 'NoLogin', base_url: 'https://example.test/v1', wire_api: 'responses' });
+    assert.equal(parsed.model_providers.other.name, 'Other');
+    await assert.rejects(() => f.manager.save({ ...input('claude'), contextWindow: 10 }), /仅适用于 Codex/);
+    await assert.rejects(() => f.manager.save({ ...input('chatgpt'), contextWindow: 10, autoCompactTokenLimit: 20 }), /不能大于/);
   } finally { await f.cleanup(); }
 });
 test('Pi writes all three official files and preserves unrelated OAuth/settings', async () => {
@@ -79,6 +96,8 @@ test('Pi writes all three official files and preserves unrelated OAuth/settings'
     assert.equal(s.theme, 'dark'); assert.equal(s.defaultModel, 'test-model');
     assert.equal(a[s.defaultProvider].type, 'api_key'); assert.equal(a[s.defaultProvider].key, 'sk-test-only');
     assert.equal(m.providers[s.defaultProvider].authHeader, true); assert.deepEqual(m.providers[s.defaultProvider].models, [{ id: 'test-model' }]);
+    // Pi requires apiKey on custom providers; the real key lives only in auth.json.
+    assert.equal(m.providers[s.defaultProvider].apiKey, 'managed-by-miswitch:auth.json'); assert.ok(!(await readText(models))!.includes('sk-test-only'));
     assert.equal(a.anthropic.refresh, 'fake-refresh');
     const login = await add(f.manager, { ...input('pi', 'Login'), mode: 'login', apiKey: undefined, loginProvider: 'anthropic' });
     await f.manager.activate(login.id);

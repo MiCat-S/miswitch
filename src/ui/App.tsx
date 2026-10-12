@@ -22,7 +22,8 @@ function ProviderEditor({ app, provider, busy, error, onClose, onSave }: { app: 
       protocol: String(data.get('protocol') ?? (app === 'claude' ? 'anthropic-messages' : 'openai-responses')) as ProviderInput['protocol'],
       claudeAuth: String(data.get('claudeAuth') ?? 'api-key') as 'api-key' | 'bearer',
       loginProvider: String(data.get('loginProvider') ?? 'anthropic'),
-      notes: String(data.get('notes')), apiKey: String(data.get('apiKey') ?? '') || undefined });
+      notes: String(data.get('notes')), apiKey: String(data.get('apiKey') ?? '') || undefined,
+      contextWindow: Number(data.get('contextWindow')) || undefined, autoCompactTokenLimit: Number(data.get('autoCompactTokenLimit')) || undefined });
   };
   return <Modal title={`${provider ? '编辑' : '添加'} ${names[app]} 配置`} onClose={() => { if (!busy) onClose(); }}>
     <form onSubmit={submit}><fieldset disabled={busy}>
@@ -37,9 +38,14 @@ function ProviderEditor({ app, provider, busy, error, onClose, onSave }: { app: 
           {app === 'pi' ? <option value="openai-completions">OpenAI Chat Completions</option> : null}
         </select></label>
         {app === 'claude' ? <label>鉴权头<select name="claudeAuth" defaultValue={provider?.claudeAuth}><option value="api-key">X-Api-Key（官方 API）</option><option value="bearer">Authorization: Bearer（网关）</option></select></label> : null}
+        {app === 'pi' ? <p className="hint">Pi 使用 Anthropic Messages 时会自行追加 /v1/messages，Base URL 请不要带 /v1；OpenAI 协议则需要带 /v1。</p> : null}
       </> : <p className="hint">保留现有登录凭据。请先在目标 CLI 中登录，再用该配置恢复官方路由。</p>}
       {mode === 'login' && app === 'pi' ? <label>已登录的 Pi Provider ID<input name="loginProvider" required defaultValue={provider?.loginProvider ?? 'anthropic'} placeholder="与 pi /login 保存的 Provider ID 相同" /></label> : null}
       <label>默认 Model<input name="model" required maxLength={200} defaultValue={provider?.model} placeholder="输入供应商支持的精确模型 ID" /></label>
+      {app === 'chatgpt' ? <div className="pair">
+        <label>上下文窗口（可选）<input name="contextWindow" type="number" min={1} step={1} defaultValue={provider?.contextWindow} placeholder="model_context_window，如 1000000" /></label>
+        <label>自动压缩阈值（可选）<input name="autoCompactTokenLimit" type="number" min={1} step={1} defaultValue={provider?.autoCompactTokenLimit} placeholder="model_auto_compact_token_limit" /></label>
+      </div> : null}
       <label>备注<textarea name="notes" rows={2} maxLength={2000} defaultValue={provider?.notes} /></label>
       <p className="hint">数据仅保存在本机，使用明文文件。请勿把配置目录加入版本控制或公开同步。</p>
       {error ? <p role="alert" className="error">{error}</p> : null}
