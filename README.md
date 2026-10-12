@@ -20,14 +20,17 @@ npm test          # 核心逻辑，使用临时目录
 npm run build    # 类型检查 + React 与 Electron 构建
 npm run test:desktop  # 实际桌面窗口、真实 IPC、表单与恢复流程，使用临时 home
 npm run package  # 为当前平台生成安装包；正式发布需另做签名/公证
+npm run test:container  # 在 Docker 容器内用真实 Claude Code / Codex / Pi 验证写入的配置
 ```
+
+容器测试需要可用的 Docker daemon（macOS 可用 `brew install colima docker && colima start`）。映像内安装固定版本的三款 CLI，用 MiSwitch 核心写入配置后以非互动模式启动各 CLI，让它们请求容器内的模拟 API，并断言实际发送的路径、鉴权头与模型。全程不使用真实密钥，也不碰宿主机的配置目录。
 
 ## 支持范围
 
 | 界面应用 | 实际适配对象 | 写入文件 |
 | --- | --- | --- |
 | Claude | Claude Code | `~/.claude/settings.json` |
-| ChatGPT | OpenAI Codex CLI | `~/.codex/config.toml` |
+| ChatGPT | OpenAI Codex CLI | `~/.codex/config.toml`；`auth.json` 只备份不改写 |
 | Pi | Pi Coding Agent，原 `badlogic/pi-mono` 项目 | `~/.pi/agent/models.json`、`auth.json`、`settings.json` |
 
 支持 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR` 目录覆盖。GUI 只能读取启动进程继承的环境，不能读取其他终端的环境。
@@ -35,6 +38,8 @@ npm run package  # 为当前平台生成安装包；正式发布需另做签名/
 Claude Code 使用 Anthropic Messages；Codex 使用 Responses；Pi 可选择 Anthropic Messages、OpenAI Responses 或 Chat Completions。仅有“OpenAI 兼容”描述不代表端点适合所有应用。
 
 “官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Pi 会检查指定 Provider 已有 OAuth 记录。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
+
+Codex 的写法与 cc-switch 相同：第三方路由写在 `model_providers.custom` 并以 `experimental_bearer_token` 保存密钥，官方路由移除 `model_provider`；两个工具可以接管同一份配置。
 
 本版不改写 Claude Desktop 消费者聊天、ChatGPT 消费者客户端的私有登录数据库，也不把 `~/.openai/` 当作 Codex 官方配置路径。Pi 指 Pi Coding Agent，不是 Inflection 的 Pi 聊天产品。
 

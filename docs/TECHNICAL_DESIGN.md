@@ -115,6 +115,7 @@ scripts/
 | `claudeAuth` | `api-key / bearer` | Anthropic 官方 API 与 Bearer 网关区分 |
 | `loginProvider` | Pi 登录模式使用 | `auth.json` 中已有 OAuth Provider ID |
 | `notes` | 最大 2000 字符 | 用户备注 |
+| `contextWindow` / `autoCompactTokenLimit` | 可选正整数，仅 Codex | 写入 `model_context_window` / `model_auto_compact_token_limit` |
 | `updatedAt` / `appliedAt` | UTC ISO8601 | UI 按用户本地时区显示 |
 | `active.*.fingerprint` | SHA-256 | 本工具管理字段的规范化 JSON 摘要；状态判定以此为准，CLI 自行重排文件不算漂移 |
 | `active.*.hashes` | 路径 → SHA-256 | 上次写入的精确字节；仅用于提示“文件已被重排” |
@@ -151,8 +152,9 @@ scripts/
 | 对象 | 默认路径 | API 写入 | 保留 / 不操作 |
 | --- | --- | --- | --- |
 | Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、API Key 或 Bearer token、`env.ANTHROPIC_MODEL`、`model` | 保留 hooks、permissions 和其他 env；不写 `~/.claude.json` 或私有登录数据 |
-| Codex CLI | `~/.codex/config.toml` | 根 `model`、`model_provider` 和一个自定义 `model_providers` 条目 | 保留 MCP、projects、非 MiSwitch Provider；不改 `auth.json` / OS 凭据存储 |
-| Pi Coding Agent | `~/.pi/agent/models.json` | 唯一 Provider 的 `baseUrl`、`api`、`authHeader`、`models[].id` | 保留其他 Provider |
+| Codex CLI | `~/.codex/config.toml` | 根 `model`、`model_provider`（官方模式移除）、可选上下文键和 `model_providers.custom` | 保留 MCP、projects、其他 Provider |
+| Codex CLI | `~/.codex/auth.json` | 不改写；只加锁、备份、校验，判断 `requires_openai_auth` | 登录、续期交给 Codex；恢复备份时一并恢复 |
+| Pi Coding Agent | `~/.pi/agent/models.json` | 唯一 Provider 的 `baseUrl`、`api`、`apiKey` 占位、`authHeader`、`models[].id` | 保留其他 Provider |
 | Pi Coding Agent | `~/.pi/agent/auth.json` | 唯一 Provider 的 `{type:"api_key",key}` | 保留非 MiSwitch 条目和其他 OAuth 登录 |
 | Pi Coding Agent | `~/.pi/agent/settings.json` | `defaultProvider`、`defaultModel` | 保留主题、thinking 等其他选项 |
 
@@ -183,25 +185,36 @@ Claude Code 消费的是 Anthropic 协议，普通 `/v1/chat/completions` 端点
 
 ```toml
 model = "your-responses-model-id"
-model_provider = "miswitch_10000000000040008000000000000001"
+model_provider = "custom"
+model_context_window = 1000000          # 可选，Provider 设置了才写
+model_auto_compact_token_limit = 900000 # 可选
 
-[model_providers.miswitch_10000000000040008000000000000001]
+[model_providers.custom]
 name = "工作 Responses 网关"
 base_url = "https://gateway.example/v1"
 wire_api = "responses"
-requires_openai_auth = false
+requires_openai_auth = true             # 仅当 auth.json 含登录凭据
 experimental_bearer_token = "example-only-replace-me"
 ```
 
-自定义 Provider ID 为 `miswitch_` + 去掉连字符的 UUID，避免覆盖官方内建 Provider。切换清理此保留命名空间的旧条目，让旧的明文 token 不继续留在主配置里，Hub 和备份仍保留对应历史。
+该模板与 cc-switch（`src-tauri/src/live/project/codex.rs`）一致，Provider ID 固定为 `custom`，两个工具可互相接管同一张表而不留下旧密钥：
+
+- 第三方路由：`model_provider = "custom"`，密钥放在 `experimental_bearer_token`。`requires_openai_auth = true` 只在 `auth.json` 含登录凭据（`OPENAI_API_KEY`、`tokens.access_token`、`tokens.refresh_token` 或 `personal_access_token`）时写入，否则省略；判定逻辑对应 cc-switch 的 `codex_auth_has_credential_login_material`。
+- 官方路由：移除 `model_provider`；`custom` 表保留但删除 `experimental_bearer_token` 与 `requires_openai_auth`，与 cc-switch 的 dormant 表一致。
+- `model_context_window` 与 `model_auto_compact_token_limit` 是受管键：每次切换先清除，Provider 设置了才写回。Codex 对目录里没有的模型会打印“Model metadata not found”并使用回退元数据，这两个键只覆盖窗口与压缩阈值，不消除该警告。
+- 旧版 `miswitch_<uuid>` 命名空间的表在切换时清理。
+
+`auth.json` 与 `config.toml` 一起作为目标文件加锁、备份、回读校验，但 Adapter 原样返回它，事务对未变化的条目不执行写入；恢复历史备份时会一并恢复当时的 `auth.json`。登录状态变化（登录或登出）会改变 `requires_openai_auth` 的应有值，因此计入漂移判定；Codex 自行刷新 token 只改变字节，不算漂移。容器内用 Codex 0.162.1 验证：无论 `auth.json` 是 API Key 登录还是 ChatGPT 登录、无论是否设置 `requires_openai_auth`，请求都带 `experimental_bearer_token` 的值，因此保留官方登录不会让官方凭据泄漏到第三方端点。
+
+Pi 的自定义 Provider ID 为 `miswitch_` + 去掉连字符的 UUID，避免覆盖官方内建 Provider；Codex 按 cc-switch 模板使用固定的 `custom`。切换时清理旧条目或旧 token，Hub 和备份仍保留对应历史。
 
 使用 TOML 解析器，不通过正则替换。根 `profile` 选择器会被移除，`profiles` 表保留；否则所选 profile 可能覆盖根级模型和 Provider。用户再次以 `--profile` 或 CLI `-c` 启动，仍可能覆盖本次选择。检测到登录方式 / workspace 限制时停止，避免静默修改策略。
 
 最新参考中 `wire_api` 为 `responses`；只支持 Chat Completions 的网关不能在此模式使用。为了“点击后普通 CLI 启动可读取”而使用已记录的 `experimental_bearer_token`，没有往 `auth.json` 写入第三方 API Key。
 
-官方推荐通过 `env_key` 引用环境变量；若后续决定改为这种方式，必须增加受控启动器，将选中密钥注入子进程。仅把 `env_key = "OPENAI_API_KEY"` 写入 TOML，无法让已打开的终端得到新环境变量。本版依照用户不加密的要求使用持久化 token，代价是目标 TOML 内含明文密钥及该字段的实验性兼容风险。
+官方文档将该字段标注为 discouraged 并推荐 `env_key`，但 `env_key` 要求进程环境里真的存在该变量（容器内验证：仅写 `env_key` 而不设环境变量时 Codex 报 Missing environment variable），GUI 无法影响已打开的终端。cc-switch 同样选择 `experimental_bearer_token`，本工具沿用该模板；`http_headers` 虽可行，但没有必要。
 
-登录模式设置 `model_provider = "openai"`，让 Codex 使用自己的登录缓存。缓存可能在 `CODEX_HOME/auth.json`，也可能在操作系统凭据存储；是否存在文件不是登录状态的充分判断。并不管理多个 ChatGPT OAuth 账号，也不自行刷新 token。
+登录模式移除 `model_provider` 键并清理本工具的 Provider 表，Codex 回到内建 `openai` 路由与自己的登录缓存。缓存可能在 `CODEX_HOME/auth.json`，也可能在操作系统凭据存储；是否存在文件不是登录状态的充分判断。并不管理多个 ChatGPT OAuth 账号，也不自行刷新 token。
 
 官方依据：[配置参考](https://developers.openai.com/codex/config-reference)、[鉴权与凭据存储](https://developers.openai.com/codex/auth)。
 
@@ -215,6 +228,7 @@ experimental_bearer_token = "example-only-replace-me"
     "miswitch_30000000000040008000000000000003": {
       "baseUrl": "https://gateway.example/v1",
       "api": "openai-completions",
+      "apiKey": "managed-by-miswitch:auth.json",
       "authHeader": true,
       "models": [{ "id": "your-model-id" }]
     }
@@ -244,7 +258,11 @@ experimental_bearer_token = "example-only-replace-me"
 
 每组 API 配置使用独立 Provider ID，防止内建 `openai` / `anthropic` 的 OAuth 凭据优先覆盖自定义密钥。只写当前选中的 MiSwitch 条目，不把所有供应商密钥铺到 Pi 的配置中。
 
+`models.json` 中的 `apiKey` 是固定占位字面量：Pi 0.73 在自定义 Provider 缺少 `apiKey` 时拒绝加载整个 `models.json`，但发送请求时优先使用 `auth.json` 中同名条目的密钥（`model-registry.js` 的 `getApiKeyAndHeaders`）。真实密钥只写入 `auth.json`。该行为已由容器内真实 CLI 测试验证。
+
 `api` 允许 `openai-completions`、`openai-responses`、`anthropic-messages`。模型仅设置官方 Schema 必需的 `id`，可选的 context、token limit、cost 不伪造；有特别兼容要求的供应商需要后续增加经过验证的能力字段。
+
+Base URL 约定按 Pi 各客户端行为而定：`anthropic-messages` 会在 Base URL 后追加 `/v1/messages`，所以填写不带 `/v1` 的地址；两种 OpenAI 协议使用 SDK 的 `/v1` 约定，需要带 `/v1`。`authHeader: true` 使 Pi 在 Anthropic 协议下同时发送 `x-api-key` 与 `Authorization: Bearer`，容器测试确认两者均带正确密钥，兼容只接受其中一种的网关。
 
 Pi 支持配置值表达式，包括环境插值和命令；本 UI 只收字面 API Key，拒绝会触发表达式的前缀。官方登录模式须指定已有 OAuth Provider ID，并验证对应条目的 `type === "oauth"`，然后只改默认模型与路由，保留登录原文。
 
@@ -371,6 +389,8 @@ interface Bridge {
 ## 4. 验证与后续发布范围
 
 已经验证核心逻辑、真实文件读写和实际 Electron 窗口 / preload IPC / React 表单流程。所有测试使用临时路径与合成密钥。
+
+`npm run test:container`（`tests/container/`）在 Docker 内安装固定版本的 Claude Code 2.1.296、Codex CLI 0.162.1、Pi 0.73.1，用 `Manager` 写入配置后以 `claude -p`、`codex exec`、`pi -p` 请求容器内的模拟 API（`mock-server.mjs`，支持三种协议的流式与非流式响应），断言实际请求的路径、鉴权头与模型。2026-10-12 结果：Claude x-api-key 与 Bearer、Codex `experimental_bearer_token`、Pi `openai-completions` 与 `anthropic-messages` 共 5 项通过。附加实验：`experimental_bearer_token` 在 `auth.json` 为 API Key 登录或 ChatGPT 登录、`requires_openai_auth` 设或不设的四种组合下都优先生效；`http_headers` 也可行但未采用。
 
 没有用真实密钥请求供应商，也没有修改真实 CLI 配置或验证真实账号；Windows/Linux 安装运行、完整 CLI 协议联调、安装包签名/公证与客户端版本矩阵需在发布前进行。当前没有将一个运行中的 OAuth 会话强制切为其他账号的能力。
 

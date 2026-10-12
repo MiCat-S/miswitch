@@ -45,12 +45,14 @@ npm audit --omit=dev
 
 2026-10-12 审查后修正：校验消息转发（`src/core/errors.ts`）、语意漂移判定（`managedFingerprint`）、待决日志状态与“放弃日志”动作（`resolveJournal`）、损坏备份跳过。
 
+2026-10-12 容器联调（`npm run test:container`，Docker via colima）：真实 Claude Code 2.1.296、Codex 0.162.1、Pi 0.73.1 对模拟 API 的请求 5/5 符合预期。联调发现并修正：Pi 0.73 要求自定义 Provider 在 `models.json` 内有 `apiKey`，否则整个文件拒绝加载；现写入占位字面量，真实密钥仍只在 `auth.json`，Pi 实际发送的是 `auth.json` 的密钥。对照 cc-switch 模板后调整：Codex Provider ID 固定为 `custom`；官方模式移除 `model_provider` 并把 `custom` 表置为 dormant；`requires_openai_auth = true` 仅在 `auth.json` 含登录凭据时写入；新增可选 `contextWindow` / `autoCompactTokenLimit`；`auth.json` 纳入目标文件（加锁、备份、校验、不改写）。容器案例扩展为“官方 `auth.json` 存在时第三方 token 优先、`auth.json` 未变、上下文键生效”，6/6 通过。
+
 ## 请重点审查
 
-1. **协议与版本**：Codex 当前 `wire_api = "responses"`；Claude 必须 Anthropic Messages。Codex 持久化方式使用文档中的实验性 `experimental_bearer_token`。需要明确接受该依赖，或后续增加 env_key + 受控启动器。
+1. **协议与版本**：Codex 当前 `wire_api = "responses"`；Claude 必须 Anthropic Messages。Codex 持久化采用 cc-switch 同款模板 `experimental_bearer_token`（官方文档标注 discouraged，但 `env_key` 需要真实环境变量）。已决定不改用 `http_headers`。容器验证该 token 在任何 `auth.json` 状态下优先生效，故不删除或暂存官方登录。
 2. **事务边界**：跨文件不是 OS 原子事务。第三方 CLI 未必配合锁，内容比较与 rename 之间仍有竞争窗口；存在 pending 日志时采取保守回滚。发生外部冲突时不覆盖。
 3. **登录边界**：只使用已有官方登录。不会伪造 auth.json、刷新 OAuth 或切换多个消费者账号；Claude/Codex 登录状态需官方 CLI 验证。
-4. **字段保留**：业务字段应保留；JSON/TOML 格式及注释经正常切换会重排，恢复用原始文本。当前命名空间 `miswitch_<32位hex>` 为本工具保留。漂移判定只看 `managedFingerprint` 覆盖的字段；若 Adapter 新增写入字段，必须同步加入指纹。
+4. **字段保留**：业务字段应保留；JSON/TOML 格式及注释经正常切换会重排，恢复用原始文本。Pi 命名空间 `miswitch_<32位hex>` 为本工具保留；Codex 使用与 cc-switch 共享的 `model_providers.custom`。漂移判定只看 `managedFingerprint` 覆盖的字段；若 Adapter 新增写入字段，必须同步加入指纹。Codex 备份包含 `auth.json` 原文（OAuth token 明文），用户已明确要求备份。
 5. **权限与路径**：路径从主进程生成；恢复条目白名单；拒绝符号链接；POSIX 写入文件 0600；Windows ACL、文件占用和目录 fsync 差异尚需平台测试。
 6. **前端边界**：没有任意 IPC 通道、文件路径、shell 执行或远程导航。截图中的 Key 被隐藏，主进程存储明文符合用户要求。
 7. **异常处理**：parser 错误不直接回显；`PublicError` 与 Zod custom 消息是唯一转发到 renderer 的文本。冲突日志存在时 snapshot 仍可读，所有写入被拒绝；界面的“放弃日志”只回退本工具自己写入的字节，外部修改保留。没有强制覆盖功能。
