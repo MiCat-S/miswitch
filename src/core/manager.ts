@@ -49,7 +49,7 @@ export class Manager {
       uuid.parse(input.id); providerSchema.parse({ ...input, apiKey }); z.string().datetime().parse(updatedAt);
       if (apiKey !== undefined) z.string().parse(apiKey);
     }
-    if (new Set(hub.providers.map(p => p.id)).size !== hub.providers.length) throw new PublicError('Hub 包含重复的配置 ID');
+    if (new Set(hub.providers.map(p => p.id)).size !== hub.providers.length) throw new PublicError('Hub 包含重复的配置 ID；请先备份 hub.json，再手动删除或改正重复项');
     for (const [app, record] of Object.entries(hub.active)) {
       appSchema.parse(app);
       z.object({ providerId: uuid, appliedAt: z.string().datetime(), rules: z.number().int().positive().optional(), fingerprint: z.string().optional(), definition: z.string().optional(), hashes: z.record(z.string(), z.string()) }).parse(record);
@@ -250,7 +250,8 @@ export class Manager {
     }));
     const { list, skipped } = await this.backups();
     const warnings = skipped.length ? [`有 ${skipped.length} 个备份文件无法解析，已跳过：${skipped.join('、')}`] : [];
-    return { providers: hub.providers.map(({ apiKey, ...p }) => ({ ...p, hasKey: !!apiKey })), active: hub.active, diagnostics, backups: list.map(b => b.info), pending, warnings };
+    const active = Object.fromEntries(Object.entries(hub.active).map(([app, r]) => [app, { providerId: r!.providerId, appliedAt: r!.appliedAt }]));
+    return { providers: hub.providers.map(({ apiKey, ...p }) => ({ ...p, hasKey: !!apiKey })), active, diagnostics, backups: list.map(b => b.info), pending, warnings };
   }
   snapshot(): Promise<Snapshot> { return this.exclusive((_check, pending) => this.snapshotUnlocked(pending), true); }
   async save(raw: ProviderInput): Promise<Snapshot> {
@@ -300,7 +301,7 @@ export class Manager {
         const key = provider.apiKey;
         if (provider.mode === 'api' && !key) throw new PublicError('API 密钥不可用');
         const after = patchProvider(provider, before, key);
-        // Stored as a hash: the fingerprint text contains the key, and `active` is returned to the renderer.
+        // Stored as a hash: the fingerprint text contains the key.
         const fingerprint = managedFingerprint(provider.app, after);
         if (fingerprint === null) throw new PublicError('切换后的配置验证失败');
         hub.active[provider.app] = { providerId: id, appliedAt: new Date().toISOString(), rules: RULES, fingerprint: hash(fingerprint), definition: hash(providerDefinition(provider)), hashes: Object.fromEntries(paths.map((path, i) => [path, hash(after[i])])) };

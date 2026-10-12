@@ -4,6 +4,8 @@ declare global { interface Window { miswitch?: Bridge } }
 const names: Record<AppId, string> = { claude: 'Claude', chatgpt: 'ChatGPT', pi: 'Pi' };
 const subtitles: Record<AppId, string> = { claude: 'Claude Code', chatgpt: 'OpenAI Codex CLI', pi: 'Pi Coding Agent' };
 const initials: Record<AppId, string> = { claude: 'C', chatgpt: '◎', pi: 'π' };
+// The main process only rejects with static messages (publicError); Electron prefixes them with the channel name.
+const errorText = (e: unknown) => e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : '操作失败';
 
 function Modal({ title, onClose, children }: { title: string; onClose(): void; children: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null);
@@ -83,14 +85,14 @@ export function App() {
   const bridge = window.miswitch;
   useEffect(() => {
     let mounted = true;
-    if (bridge) void bridge.snapshot().then(s => { if (mounted) setSnapshot(s); }).catch(() => { if (mounted) { setLoadFailed(true); setError('读取失败，请检查本机配置文件与目录权限。'); } });
+    if (bridge) void bridge.snapshot().then(s => { if (mounted) setSnapshot(s); }).catch(e => { if (mounted) { setLoadFailed(true); setError(`读取失败：${errorText(e)}`); } });
     return () => { mounted = false; };
   }, [bridge]);
   const act = async (operation: () => Promise<Snapshot>, message: string | ((s: Snapshot) => string), closeEditor = false) => {
     if (busy) return;
     setBusy(true); setError(''); setNotice('');
-    try { const next = await operation(); setSnapshot(next); setNotice(typeof message === 'string' ? message : message(next)); if (closeEditor) setEditor(undefined); setConfirmation(undefined); }
-    catch (e) { setError(e instanceof Error ? e.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : '操作失败'); }
+    try { const next = await operation(); setSnapshot(next); setLoadFailed(false); setNotice(typeof message === 'string' ? message : message(next)); if (closeEditor) setEditor(undefined); setConfirmation(undefined); }
+    catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
   };
   const diagnosis = snapshot?.diagnostics.find(d => d.app === app);

@@ -52,7 +52,8 @@ export type Diagnosis = { app: AppId; paths: string[]; initialized: boolean; sta
 export type BackupInfo = { id: string; app: AppId; createdAt: string; sequence?: number; files: string[] };
 // A journal whose target files were changed by someone else. `valid` is false when pending.json itself cannot be parsed.
 export type PendingInfo = { id: string; app: AppId | null; createdAt: string | null; paths: string[]; conflicts: string[]; valid: boolean };
-export type Snapshot = { providers: PublicProvider[]; active: Hub['active']; diagnostics: Diagnosis[]; backups: BackupInfo[]; pending: PendingInfo | null; warnings: string[] };
+// The renderer only needs which provider is active; the hashes stay in the main process.
+export type Snapshot = { providers: PublicProvider[]; active: Partial<Record<AppId, Pick<ActiveRecord, 'providerId' | 'appliedAt'>>>; diagnostics: Diagnosis[]; backups: BackupInfo[]; pending: PendingInfo | null; warnings: string[] };
 export interface Bridge {
   snapshot(): Promise<Snapshot>;
   save(input: ProviderInput): Promise<Snapshot>;
