@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import TOML from '@iarna/toml';
 import { Manager } from '../src/core/manager';
+import { managedFingerprint, providerDefinition } from '../src/core/adapters';
 import { resolvePaths } from '../src/core/paths';
 import { atomicWrite, hash, readText, replaceText, withLocks } from '../src/core/files';
 import { providerSchema, type AppId, type ProviderInput } from '../src/core/types';
@@ -186,6 +187,47 @@ test('an active record written before definitions is backfilled from the unedite
     assert.equal((await f.manager.snapshot()).diagnostics[0].edited, false);
     const s = await f.manager.save({ ...input('claude'), id: p.id, baseUrl: 'https://gateway.test' });
     assert.equal(s.active.claude?.providerId, p.id); assert.equal(s.diagnostics[0].edited, true);
+  } finally { await f.cleanup(); }
+});
+test('only fields the adapter writes for the provider mode count as an edit', async () => {
+  const f = await fixture();
+  try {
+    const cases: [ProviderInput, Partial<ProviderInput>, boolean][] = [
+      [{ ...input('chatgpt'), mode: 'login', apiKey: undefined }, { name: 'Renamed login' }, false],
+      [{ ...input('chatgpt'), mode: 'login', apiKey: undefined }, { contextWindow: 1000 }, true],
+      [input('chatgpt'), { claudeAuth: 'bearer' }, false],
+      [input('claude'), { loginProvider: 'openai' }, false],
+      [input('claude'), { claudeAuth: 'bearer' }, true],
+      [input('pi'), { loginProvider: 'openai' }, false],
+      [input('pi'), { protocol: 'openai-completions' }, true]
+    ];
+    for (const [original, change, edited] of cases) {
+      const p = await add(f.manager, { ...original, name: randomUUID() }); await f.manager.activate(p.id);
+      const s = await f.manager.save({ ...original, name: p.name, ...change, id: p.id });
+      assert.equal(s.diagnostics.find(d => d.app === original.app)!.edited, edited, JSON.stringify(change));
+    }
+  } finally { await f.cleanup(); }
+});
+test('a record written under rule set 1 stays written after the upgrade and is cleaned up on the next write', async () => {
+  const f = await fixture();
+  try {
+    const path = f.paths.targets.claude[0];
+    const p = await add(f.manager); await f.manager.activate(p.id);
+    // What 37e2673 wrote: it kept the legacy small/fast and fable routes and fingerprinted without them.
+    const settings = JSON.parse((await readText(path))!); settings.env.ANTHROPIC_SMALL_FAST_MODEL = 'old-small'; settings.env.ANTHROPIC_DEFAULT_FABLE_MODEL = 'old-fable';
+    const text = JSON.stringify(settings); await f.put(path, text);
+    const hubPath = join(f.paths.data, 'hub.json'); const hub = JSON.parse(await readFile(hubPath, 'utf8'));
+    const record = hub.active.claude; delete record.rules; delete record.definition;
+    record.fingerprint = hash(managedFingerprint('claude', [text], 1)!); record.hashes = { [path]: hash(text) };
+    await writeFile(hubPath, JSON.stringify(hub));
+    let d = (await f.manager.snapshot()).diagnostics[0];
+    assert.equal(d.state, 'written'); assert.equal(d.edited, false); assert.ok(d.warnings.some(w => w.includes('ANTHROPIC_SMALL_FAST_MODEL')));
+    // A rule set 1 definition is compared under rule set 1, so a notes edit is still not an edit.
+    d = (await f.manager.save({ ...input('claude'), id: p.id, notes: 'note' })).diagnostics[0];
+    assert.equal(d.edited, false); assert.equal(JSON.parse(await readFile(hubPath, 'utf8')).active.claude.definition, hash(providerDefinition({ ...hub.providers[0] }, 1)));
+    d = (await f.manager.activate(p.id)).diagnostics[0];
+    assert.equal(d.state, 'written'); assert.ok(!d.warnings.some(w => w.includes('ANTHROPIC_SMALL_FAST_MODEL')));
+    assert.equal(JSON.parse((await readText(path))!).env.ANTHROPIC_SMALL_FAST_MODEL, undefined);
   } finally { await f.cleanup(); }
 });
 test('Claude small/fast model is written to the haiku route; legacy and alias routes are cleared', async () => {

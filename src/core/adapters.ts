@@ -39,10 +39,22 @@ export const claudeEnvKeys = [
   'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
   'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_OAUTH_TOKEN'
 ];
-// The provider fields patchProvider() reads. Notes never reach a target file; the name only does for Codex.
-export function providerDefinition(p: Provider): string {
-  const { notes, updatedAt, name, ...rest } = p;
-  return canonical(p.app === 'chatgpt' ? { ...rest, name } : rest);
+// Managed-field rule sets, recorded on every active record. Rule set 1 (up to 722c119) did not manage the
+// fable and legacy small/fast routes, and its definition hashed nearly the whole provider. Records keep the
+// rule set they were written with, so an upgrade alone never turns into drift or an edit.
+export const RULES = 2;
+const claudeEnvKeysV1 = claudeEnvKeys.filter(k => k !== 'ANTHROPIC_DEFAULT_FABLE_MODEL' && k !== 'ANTHROPIC_SMALL_FAST_MODEL');
+// The provider fields patchProvider() writes for this app and mode. Any other edit leaves the target unchanged.
+export function providerDefinition(p: Provider, rules = RULES): string {
+  if (rules === 1) {
+    const { notes, updatedAt, name, ...rest } = p;
+    return canonical(p.app === 'chatgpt' ? { ...rest, name } : rest);
+  }
+  const api = p.mode === 'api';
+  const fields = p.app === 'claude' ? { model: p.model, ...(api ? { baseUrl: p.baseUrl, apiKey: p.apiKey, claudeAuth: p.claudeAuth, smallFastModel: p.smallFastModel } : {}) }
+    : p.app === 'chatgpt' ? { model: p.model, contextWindow: p.contextWindow, autoCompactTokenLimit: p.autoCompactTokenLimit, ...(api ? { name: p.name, baseUrl: p.baseUrl, apiKey: p.apiKey } : {}) }
+    : { model: p.model, ...(api ? { id: p.id, baseUrl: p.baseUrl, protocol: p.protocol, apiKey: p.apiKey } : { loginProvider: p.loginProvider }) };
+  return canonical({ app: p.app, mode: p.mode, ...fields });
 }
 // Input order matches resolvePaths(). Unknown fields survive semantic merge.
 export function patchProvider(p: Provider, originals: (string | null)[], key?: string): (string | null)[] {
@@ -121,13 +133,13 @@ export function canonical(value: unknown): string {
 }
 const pick = (obj: Record<string, any>, keys: string[]) => Object.fromEntries(keys.filter(k => k in obj).map(k => [k, obj[k]]));
 const managedEntries = (obj: unknown) => isObject(obj) ? pick(obj, Object.keys(obj).filter(id => managedPattern.test(id))) : {};
-// Serializes only the fields patchProvider() controls. Returns null when a file cannot be parsed.
-export function managedFingerprint(app: AppId, originals: (string | null)[]): string | null {
+// Serializes only the fields patchProvider() controls under the given rule set. Returns null when a file cannot be parsed.
+export function managedFingerprint(app: AppId, originals: (string | null)[], rules = RULES): string | null {
   try {
     if (app === 'claude') {
       const settings = jsonObject(originals[0]);
       const env = isObject(settings.env) ? settings.env : {};
-      return canonical({ model: settings.model, apiKeyHelper: settings.apiKeyHelper !== undefined, env: pick(env, claudeEnvKeys) });
+      return canonical({ model: settings.model, apiKeyHelper: settings.apiKeyHelper !== undefined, env: pick(env, rules === 1 ? claudeEnvKeysV1 : claudeEnvKeys) });
     }
     if (app === 'chatgpt') {
       const config = TOML.parse(originals[0] ?? '') as Record<string, any>;

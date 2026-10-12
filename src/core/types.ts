@@ -41,7 +41,8 @@ export type Provider = Omit<z.output<typeof providerSchema>, 'apiKey' | 'id'> & 
 export type PublicProvider = Omit<Provider, 'apiKey'> & { hasKey: boolean };
 // `fingerprint` hashes only the fields this tool manages; `hashes` are the exact bytes written;
 // `definition` hashes the provider fields that reach a target file, as they were when written.
-export type ActiveRecord = { providerId: string; appliedAt: string; fingerprint?: string; definition?: string; hashes: Record<string, string> };
+// `rules` is the managed-field rule set both hashes were computed with; absent means rule set 1.
+export type ActiveRecord = { providerId: string; appliedAt: string; rules?: number; fingerprint?: string; definition?: string; hashes: Record<string, string> };
 export type Hub = { version: 1; providers: Provider[]; active: Partial<Record<AppId, ActiveRecord>> };
 // written: managed fields still equal the last write. reformatted: bytes differ but managed fields do not.
 // edited: the active provider was edited after it was written, so the target still holds the old settings.
