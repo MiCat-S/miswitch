@@ -24,7 +24,7 @@
 
 - [ ] 容器案例缺少 Pi 的 `openai-responses` 協定。
 - [ ] 容器案例沒有真實登入情境：Claude／Codex 的官方 OAuth、Codex 使用 `cli_auth_credentials_store = "keyring"` 時 `auth.json` 不存在的行為。
-- [ ] IPC 來源比對（`src/desktop/main.ts` 以 `pathToFileURL().href` 對比 frame URL）未在含空白或非 ASCII 的路徑、以及 asar 打包後驗證。
+- [ ] IPC 來源比對（`src/desktop/main.ts` 以 `pathToFileURL().href` 對比 frame URL）已在 macOS arm64 打包版（asar、含空白／中文／`#` 的路徑）驗證；Windows／Linux 打包版尚未驗證。
 - [ ] Claude 背景任務的動態驗證：容器只驗證 `--model haiku` 主對話走小型／快速模型，尚未觸發任何真正的背景請求。
 - [ ] 備份列表快取的版本鍵（dev、ino、size、mtime、ctime）未在 Windows 與時間精度粗的檔案系統上實測。
 - [ ] 真實供應商聯調：現有容器測試只驗證對模擬 API 的路由，不驗證協定相容、串流、工具調用。
@@ -32,11 +32,10 @@
 ## 發布前工作
 
 - [ ] Windows 與 Linux 的 GUI 測試；Windows 的 ACL、檔案佔用導致 rename 失敗的行為。
-- [ ] 安裝包、簽名與公證；`npm run package` 尚未在任何平台實際執行。
+- [ ] 簽名與公證：macOS arm64 dmg 已可用 `npm run package` 產生，但只有 ad-hoc 簽名、未公證（需 Developer ID 憑證）；Intel／universal、Windows、Linux 安裝包尚未建置；應用程式圖示未設定，使用 Electron 預設圖示。
 - [ ] 開發依賴審計的 8 個 moderate 項目，來自 electron-builder 的 `sprintf-js → roarr → global-agent → @electron/get` 鏈；執行期依賴為 0。
 - [ ] CLI 版本矩陣：容器固定 Claude Code 2.1.296、Codex 0.162.1、Pi 0.73.1；本機實際使用 ChatGPT 桌面版內建的 Codex 0.162.0-alpha.17.2。
 
 ## 環境
 
 - [ ] `colima` 未設定開機自動啟動；跑 `npm run test:container` 前先 `colima start`。
-- [ ] Git 儲存庫只有本機 `main`，沒有遠端。

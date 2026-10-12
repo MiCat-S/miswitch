@@ -37,6 +37,9 @@
   "build": {
     "appId": "dev.miswitch.app",
     "productName": "MiSwitch",
+    "directories": {
+      "output": "release"
+    },
     "files": [
       "dist/**",
       "dist-desktop/**",
@@ -47,7 +50,9 @@
       "target": [
         "dmg"
       ],
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "identity": "-",
+      "hardenedRuntime": false
     },
     "win": {
       "target": [

@@ -19,9 +19,11 @@ npm run dev
 npm test          # 核心逻辑，使用临时目录
 npm run build    # 类型检查 + React 与 Electron 构建
 npm run test:desktop  # 实际桌面窗口、真实 IPC、表单与恢复流程，使用临时 home
-npm run package  # 为当前平台生成安装包；正式发布需另做签名/公证
+npm run package  # 为当前平台生成安装包，输出到 release/
 npm run test:container  # 在 Docker 容器内用真实 Claude Code / Codex / Pi 验证写入的配置
 ```
+
+macOS 安装包为 Apple Silicon（arm64）dmg，使用 ad-hoc 签名，没有 Developer ID 签名与公证。首次打开时 macOS 会提示无法验证开发者：在“系统设置 → 隐私与安全性”中点“仍要打开”，或对拖入“应用程序”后的副本运行 `xattr -dr com.apple.quarantine /Applications/MiSwitch.app`。
 
 容器测试需要可用的 Docker daemon（macOS 可用 `brew install colima docker && colima start`）。映像内安装固定版本的三款 CLI，用 MiSwitch 核心写入配置后以非互动模式启动各 CLI，让它们请求容器内的模拟 API，并断言实际发送的路径、鉴权头与模型。全程不使用真实密钥，也不碰宿主机的配置目录。
 
