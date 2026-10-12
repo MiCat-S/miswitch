@@ -2,18 +2,38 @@ import { z } from 'zod';
 
 export const appSchema = z.enum(['claude', 'chatgpt', 'pi']);
 export type AppId = z.infer<typeof appSchema>;
+export const protocolSchema = z.enum(['anthropic-messages', 'openai-responses', 'openai-completions']);
+// Values Codex 0.162 accepts for model_reasoning_effort; support also depends on the model.
+export const reasoningEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+// Static messages; shared by provider validation and the model list request, which sends the key to this URL.
+export function baseUrlIssues(value: string): string[] {
+  try {
+    const url = new URL(value);
+    const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    const issues: string[] = [];
+    if (!(url.protocol === 'https:' || (url.protocol === 'http:' && loopback))) issues.push('Base URL 必须为 HTTPS，或本机 HTTP 地址');
+    if (url.username || url.password || url.search || url.hash) issues.push('Base URL 不得含账号、查询参数或片段');
+    return issues;
+  } catch { return ['Base URL 格式无效']; }
+}
+const aliasModel = z.string().trim().min(1).max(200).optional();
 export const providerSchema = z.object({
   id: z.string().uuid().optional(), app: appSchema,
   name: z.string().trim().min(1).max(100),
   mode: z.enum(['api', 'login']),
   baseUrl: z.string().trim().max(2048).default(''),
   model: z.string().trim().min(1).max(200),
-  protocol: z.enum(['anthropic-messages', 'openai-responses', 'openai-completions']),
+  protocol: protocolSchema,
   claudeAuth: z.enum(['api-key', 'bearer']).default('api-key'),
   loginProvider: z.string().regex(/^[a-zA-Z0-9_-]+$/).max(100).default('anthropic'),
   notes: z.string().max(2000).default(''),
-  // Claude API mode only: written as ANTHROPIC_DEFAULT_HAIKU_MODEL (haiku alias and background tasks).
-  smallFastModel: z.string().trim().min(1).max(200).optional(),
+  // Claude API mode only: model alias routes. The haiku route also serves background tasks.
+  smallFastModel: aliasModel,
+  sonnetModel: aliasModel,
+  opusModel: aliasModel,
+  fableModel: aliasModel,
+  // Codex only: written as model_reasoning_effort when set; an unset value leaves the file's own value.
+  reasoningEffort: z.enum(reasoningEfforts).optional(),
   // Codex only: written as model_context_window / model_auto_compact_token_limit.
   contextWindow: z.number().int().positive().max(100_000_000).optional(),
   autoCompactTokenLimit: z.number().int().positive().max(100_000_000).optional(),
@@ -22,17 +42,13 @@ export const providerSchema = z.object({
   // These messages are static and are forwarded to the UI by publicError().
   const issue = (message: string) => ctx.addIssue({ code: 'custom', message });
   if (p.mode === 'api') {
-    try {
-      const url = new URL(p.baseUrl);
-      const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-      if (!(url.protocol === 'https:' || (url.protocol === 'http:' && loopback))) issue('Base URL 必须为 HTTPS，或本机 HTTP 地址');
-      if (url.username || url.password || url.search || url.hash) issue('Base URL 不得含账号、查询参数或片段');
-    } catch { issue('Base URL 格式无效'); }
+    baseUrlIssues(p.baseUrl).forEach(issue);
     if (p.app === 'claude' && p.protocol !== 'anthropic-messages') issue('Claude Code 需要 Anthropic Messages 协议');
     if (p.app === 'chatgpt' && p.protocol !== 'openai-responses') issue('Codex 需要 OpenAI Responses 协议');
     if (p.apiKey && (/\s/.test(p.apiKey) || /^[!$]/.test(p.apiKey))) issue('API Key 必须为字面密钥，不得含空白或命令/环境变量表达式');
   }
-  if (p.smallFastModel !== undefined && (p.app !== 'claude' || p.mode !== 'api')) issue('小型／快速模型仅适用于 Claude Code 的 API 模式');
+  if ([p.smallFastModel, p.sonnetModel, p.opusModel, p.fableModel].some(m => m !== undefined) && (p.app !== 'claude' || p.mode !== 'api')) issue('模型别名映射仅适用于 Claude Code 的 API 模式');
+  if (p.reasoningEffort !== undefined && p.app !== 'chatgpt') issue('推理强度仅适用于 Codex');
   if (p.app !== 'chatgpt' && (p.contextWindow !== undefined || p.autoCompactTokenLimit !== undefined)) issue('上下文窗口与自动压缩阈值仅适用于 Codex');
   if (p.contextWindow !== undefined && p.autoCompactTokenLimit !== undefined && p.autoCompactTokenLimit > p.contextWindow) issue('自动压缩阈值不能大于上下文窗口');
 });

@@ -39,6 +39,11 @@ export const claudeEnvKeys = [
   'ANTHROPIC_DEFAULT_FABLE_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL',
   'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_OAUTH_TOKEN'
 ];
+// Claude Code's model alias routes in the order the editor shows them.
+export const claudeAliasRoutes = (p: Pick<Provider, 'smallFastModel' | 'sonnetModel' | 'opusModel' | 'fableModel'>): [string, string | undefined][] => [
+  ['ANTHROPIC_DEFAULT_HAIKU_MODEL', p.smallFastModel], ['ANTHROPIC_DEFAULT_SONNET_MODEL', p.sonnetModel],
+  ['ANTHROPIC_DEFAULT_OPUS_MODEL', p.opusModel], ['ANTHROPIC_DEFAULT_FABLE_MODEL', p.fableModel]
+];
 // Managed-field rule sets, recorded on every active record. Rule set 1 (up to 722c119) did not manage the
 // fable and legacy small/fast routes, and its definition hashed nearly the whole provider. Records keep the
 // rule set they were written with, so an upgrade alone never turns into drift or an edit.
@@ -51,8 +56,8 @@ export function providerDefinition(p: Provider, rules = RULES): string {
     return canonical(p.app === 'chatgpt' ? { ...rest, name } : rest);
   }
   const api = p.mode === 'api';
-  const fields = p.app === 'claude' ? { model: p.model, ...(api ? { baseUrl: p.baseUrl, apiKey: p.apiKey, claudeAuth: p.claudeAuth, smallFastModel: p.smallFastModel } : {}) }
-    : p.app === 'chatgpt' ? { model: p.model, contextWindow: p.contextWindow, autoCompactTokenLimit: p.autoCompactTokenLimit, ...(api ? { name: p.name, baseUrl: p.baseUrl, apiKey: p.apiKey } : {}) }
+  const fields = p.app === 'claude' ? { model: p.model, ...(api ? { baseUrl: p.baseUrl, apiKey: p.apiKey, claudeAuth: p.claudeAuth, smallFastModel: p.smallFastModel, sonnetModel: p.sonnetModel, opusModel: p.opusModel, fableModel: p.fableModel } : {}) }
+    : p.app === 'chatgpt' ? { model: p.model, contextWindow: p.contextWindow, autoCompactTokenLimit: p.autoCompactTokenLimit, reasoningEffort: p.reasoningEffort, ...(api ? { name: p.name, baseUrl: p.baseUrl, apiKey: p.apiKey } : {}) }
     : { model: p.model, ...(api ? { id: p.id, baseUrl: p.baseUrl, protocol: p.protocol, apiKey: p.apiKey } : { loginProvider: p.loginProvider }) };
   return canonical({ app: p.app, mode: p.mode, ...fields });
 }
@@ -69,8 +74,8 @@ export function patchProvider(p: Provider, originals: (string | null)[], key?: s
       env.ANTHROPIC_BASE_URL = p.baseUrl;
       env[p.claudeAuth === 'bearer' ? 'ANTHROPIC_AUTH_TOKEN' : 'ANTHROPIC_API_KEY'] = key;
       env.ANTHROPIC_MODEL = p.model;
-      // Without it, background tasks request Anthropic's default haiku ID, which gateways often lack.
-      if (p.smallFastModel !== undefined) env.ANTHROPIC_DEFAULT_HAIKU_MODEL = p.smallFastModel;
+      // Without the haiku route, background tasks request Anthropic's default haiku ID, which gateways often lack.
+      for (const [name, value] of claudeAliasRoutes(p)) if (value !== undefined) env[name] = value;
     }
     return [asJson(settings)];
   }
@@ -86,6 +91,8 @@ export function patchProvider(p: Provider, originals: (string | null)[], key?: s
     delete config.model_context_window; delete config.model_auto_compact_token_limit;
     if (p.contextWindow !== undefined) config.model_context_window = p.contextWindow;
     if (p.autoCompactTokenLimit !== undefined) config.model_auto_compact_token_limit = p.autoCompactTokenLimit;
+    // A one-time default, not a managed key: Codex itself may rewrite it when the user changes the effort.
+    if (p.reasoningEffort !== undefined) config.model_reasoning_effort = p.reasoningEffort;
     // cc-switch template (src-tauri/src/live/project/codex.rs): the third-party route is the fixed
     // table `model_providers.custom` with the key in `experimental_bearer_token`; the official route
     // is the absence of `model_provider`, with the table left dormant and its token removed.
@@ -144,7 +151,8 @@ export function liveProvider(app: AppId, originals: (string | null)[]): Provider
     if (!key) return { app, name: 'Claude 官方登录', mode: 'login', model, protocol: 'anthropic-messages', notes };
     const baseUrl = text(env.ANTHROPIC_BASE_URL) ?? 'https://api.anthropic.com';
     return { app, name: host(baseUrl), mode: 'api', baseUrl, apiKey: key, claudeAuth: text(env.ANTHROPIC_AUTH_TOKEN) ? 'bearer' : 'api-key', model,
-      smallFastModel: text(env.ANTHROPIC_DEFAULT_HAIKU_MODEL) ?? text(env.ANTHROPIC_SMALL_FAST_MODEL), protocol: 'anthropic-messages', notes };
+      smallFastModel: text(env.ANTHROPIC_DEFAULT_HAIKU_MODEL) ?? text(env.ANTHROPIC_SMALL_FAST_MODEL), sonnetModel: text(env.ANTHROPIC_DEFAULT_SONNET_MODEL),
+      opusModel: text(env.ANTHROPIC_DEFAULT_OPUS_MODEL), fableModel: text(env.ANTHROPIC_DEFAULT_FABLE_MODEL), protocol: 'anthropic-messages', notes };
   }
   if (app === 'chatgpt') {
     const config = TOML.parse(originals[0] ?? '') as Record<string, any>;
