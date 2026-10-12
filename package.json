@@ -1,5 +1,8 @@
 {
-  "name": "miswitch", "version": "0.1.0", "private": true, "type": "module",
+  "name": "miswitch",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
   "description": "Local provider switcher for Claude Code, Codex CLI and Pi Coding Agent",
   "main": "dist-desktop/main.cjs",
   "scripts": {
@@ -9,15 +12,52 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
     "test:desktop": "npm run build && electron scripts/smoke-desktop.cjs",
-    "package": "npm run build && electron-builder"
+    "package": "npm run build && electron-builder",
+    "test:container": "docker build -t miswitch-cli-test -f tests/container/Dockerfile . && docker run --rm miswitch-cli-test"
   },
-  "dependencies": { "@iarna/toml": "2.2.5", "proper-lockfile": "4.1.2", "react": "19.3.0", "react-dom": "19.3.0", "zod": "4.1.12" },
-  "devDependencies": { "@types/node": "^22.0.0", "@types/proper-lockfile": "^4.1.4", "@types/react": "^19.0.0", "@types/react-dom": "^19.0.0", "electron": "44.7.0", "electron-builder": "^26.0.0", "esbuild": "^0.28.0", "tsx": "^4.20.0", "typescript": "^5.9.0", "vite": "8.3.4" },
+  "dependencies": {
+    "@iarna/toml": "2.2.5",
+    "proper-lockfile": "4.1.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.1.12"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "electron": "44.7.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vite": "8.3.4"
+  },
   "build": {
-    "appId": "dev.miswitch.app", "productName": "MiSwitch",
-    "files": ["dist/**", "dist-desktop/**", "package.json"],
+    "appId": "dev.miswitch.app",
+    "productName": "MiSwitch",
+    "files": [
+      "dist/**",
+      "dist-desktop/**",
+      "package.json"
+    ],
     "asar": true,
-    "mac": { "target": ["dmg"], "category": "public.app-category.developer-tools" },
-    "win": { "target": ["nsis"] }, "linux": { "target": ["AppImage"] }
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    }
   }
 }
