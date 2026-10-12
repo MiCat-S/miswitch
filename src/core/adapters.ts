@@ -52,7 +52,8 @@ const claudeEnvKeysV1 = claudeEnvKeys.filter(k => k !== 'ANTHROPIC_DEFAULT_FABLE
 // The provider fields patchProvider() writes for this app and mode. Any other edit leaves the target unchanged.
 export function providerDefinition(p: Provider, rules = RULES): string {
   if (rules === 1) {
-    const { notes, updatedAt, name, ...rest } = p;
+    // Rule set 1 predates `icon`; leaving it out keeps those hashes and keeps the icon out of what counts as an edit.
+    const { notes, updatedAt, name, icon, ...rest } = p;
     return canonical(p.app === 'chatgpt' ? { ...rest, name } : rest);
   }
   const api = p.mode === 'api';

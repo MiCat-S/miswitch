@@ -6,7 +6,8 @@ import { Manager } from '../core/manager';
 import { resolvePaths } from '../core/paths';
 import { publicError } from '../core/errors';
 import { presetLinks } from '../core/presets';
-import type { AppId, ConfigEdit, ConfigParseRequest, ConfigViewRequest, ModelListRequest, ProviderInput } from '../core/types';
+import type { AppId, ConfigViewRequest, GlobalEdit, ModelListRequest, ProviderInput } from '../core/types';
+import { createTray } from './tray';
 
 // Development-only isolation for smoke tests. Packaged builds ignore this override.
 const sandboxRoot = !app.isPackaged && process.env.MISWITCH_SANDBOX_ROOT;
@@ -15,7 +16,12 @@ if (sandboxRoot) {
   const userData = join(sandboxRoot, 'electron');
   mkdirSync(userData, { recursive: true, mode: 0o700 });
   app.setPath('userData', userData);
+} else {
+  // The app is shown as Mi-Switch, but its data stays in the folder earlier versions created (named MiSwitch), so the
+  // rename does not lose the saved providers or backups.
+  app.setPath('userData', join(app.getPath('appData'), 'MiSwitch'));
 }
+app.setName('Mi-Switch');
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   let window: BrowserWindow | undefined;
@@ -27,30 +33,38 @@ else {
     const entry = join(__dirname, '../dist/index.html');
     const entryUrl = pathToFileURL(entry).href;
     const handlers: Record<string, (payload: any) => Promise<unknown>> = {
-      snapshot: () => manager.snapshot(), save: ({ input, config }: { input: ProviderInput; config?: ConfigEdit }) => manager.save(input, config),
+      snapshot: () => manager.snapshot(), save: ({ input, options }: { input: ProviderInput; options?: { activate?: boolean } }) => manager.save(input, { activate: options?.activate === true }),
       remove: (id: string) => manager.remove(id), activate: (id: string) => manager.activate(id),
       restore: (id: string) => manager.restore(id), resolveJournal: (id: string) => manager.resolveJournal(id),
       importLive: (app?: AppId) => manager.importLive(app),
       // Chromium's network stack honours the system proxy, which some vendor endpoints need.
       listModels: (request: ModelListRequest) => manager.listModels(request, (url, init) => net.fetch(url, init)),
-      configView: (request: ConfigViewRequest) => manager.configView(request), parseConfig: (request: ConfigParseRequest) => manager.parseConfig(request)
+      configView: (request: ConfigViewRequest) => manager.configView(request),
+      globalView: (app: AppId) => manager.globalView(app), saveGlobal: (request: GlobalEdit) => manager.saveGlobal(request)
     };
+    // Calls that can change which provider is in use; the menu bar is rebuilt after each of them.
+    const mutating = new Set(['save', 'remove', 'activate', 'restore', 'resolveJournal', 'importLive', 'saveGlobal']);
+    const tray = createTray(manager, {
+      open: () => { if (!window) createWindow(); window?.show(); window?.focus(); },
+      changed: () => window?.webContents.send('miswitch:changed')
+    });
     for (const [name, handler] of Object.entries(handlers)) {
       ipcMain.handle(`miswitch:${name}`, async (event, payload: unknown) => {
         if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame || event.senderFrame.url !== entryUrl) throw new Error('未授权的调用来源');
         // publicError() forwards only static messages; raw JSON/TOML/Zod errors may echo secrets.
         try { return await handler(payload); } catch (error) { throw new Error(publicError(error)); }
+        finally { if (mutating.has(name)) void tray.refresh(); }
       });
     }
-    const createWindow = () => {
-      window = new BrowserWindow({ width: 1140, height: 820, minWidth: 840, minHeight: 600, title: 'MiSwitch', backgroundColor: nativeTheme.shouldUseDarkColors ? '#141816' : '#f7f8f6', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+    function createWindow() {
+      window = new BrowserWindow({ width: 1140, height: 820, minWidth: 840, minHeight: 600, title: 'Mi-Switch', backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e20' : '#f5f5f7', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
       // Only the vendor pages listed in the presets open, and only in the system browser.
       window.webContents.setWindowOpenHandler(({ url }) => { if (presetLinks.has(url)) void shell.openExternal(url); return { action: 'deny' }; });
       window.webContents.on('will-navigate', event => event.preventDefault());
       window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
       window.on('closed', () => { window = undefined; });
       void window.loadFile(entry);
-    };
+    }
     createWindow();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });

@@ -2,7 +2,7 @@
 // split into the provider's fields, which this tool writes on switch, and everything else, which is a global
 // setting of the CLI: edited in place, written on save, and never stored per provider.
 import TOML from '@iarna/toml';
-import { asJson, canonical, claudeEnvKeys, codexRouteId, patchProvider } from './adapters';
+import { asJson, claudeEnvKeys, codexRouteId, patchProvider } from './adapters';
 import { PublicError } from './errors';
 import type { AppId, ConfigDraft, Provider } from './types';
 
@@ -69,7 +69,6 @@ export function joinConfig(global: Record<string, any>, owned: Record<string, an
   }
   return result;
 }
-export const globalDigest = (app: AppId, value: Record<string, any>) => canonical(splitConfig(app, value).global);
 
 // The draft's provider fields projected onto `text`, with the same patch a switch applies.
 export function composeConfig(app: AppId, text: string, draft: ConfigDraft, others: (string | null)[], provider: { id?: string; hasSavedKey: boolean }): string {
@@ -88,39 +87,4 @@ export function composeConfig(app: AppId, text: string, draft: ConfigDraft, othe
   } as Provider;
   const key = draft.apiKey || (provider.hasSavedKey ? SAVED_KEY_TEXT : '');
   return patchProvider(p, [serializeConfig(app, value), ...others], key)[0]!;
-}
-
-// The provider fields a configuration text sets, for two-way sync with the form. Empty strings clear a field.
-// `keptKey` is true when the text still carries the saved-key placeholder. Null when the text uses settings
-// the form cannot represent (Claude apiKeyHelper or cloud platform routes).
-export function fieldsFromConfig(app: AppId, text: string): { fields: ConfigDraft; keptKey: boolean } | null {
-  const value = parseConfigText(app, text);
-  const str = (v: unknown) => typeof v === 'string' ? v : typeof v === 'number' ? String(v) : '';
-  let keptKey = false;
-  const key = (v: unknown) => { if (v === SAVED_KEY_TEXT) { keptKey = true; return undefined; } return typeof v === 'string' ? v : undefined; };
-  if (app === 'claude') {
-    const env = isObject(value.env) ? value.env : {};
-    if (value.apiKeyHelper !== undefined || ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'].some(k => env[k])) return null;
-    const token = env.ANTHROPIC_AUTH_TOKEN ?? env.ANTHROPIC_API_KEY;
-    const api = token !== undefined || env.ANTHROPIC_BASE_URL !== undefined;
-    const fields: ConfigDraft = { mode: api ? 'api' : 'login', model: str(env.ANTHROPIC_MODEL) || str(value.model) };
-    if (api) Object.assign(fields, {
-      baseUrl: str(env.ANTHROPIC_BASE_URL), claudeAuth: env.ANTHROPIC_AUTH_TOKEN !== undefined ? 'bearer' : 'api-key', apiKey: key(token),
-      smallFastModel: str(env.ANTHROPIC_DEFAULT_HAIKU_MODEL) || str(env.ANTHROPIC_SMALL_FAST_MODEL), sonnetModel: str(env.ANTHROPIC_DEFAULT_SONNET_MODEL),
-      opusModel: str(env.ANTHROPIC_DEFAULT_OPUS_MODEL), fableModel: str(env.ANTHROPIC_DEFAULT_FABLE_MODEL)
-    });
-    return { fields, keptKey };
-  }
-  if (app === 'chatgpt') {
-    const route = str(value.model_provider);
-    const table = route && isObject(value.model_providers) && isObject(value.model_providers[route]) ? value.model_providers[route] : {};
-    const fields: ConfigDraft = { mode: route ? 'api' : 'login', model: str(value.model), contextWindow: str(value.model_context_window),
-      autoCompactTokenLimit: str(value.model_auto_compact_token_limit), reasoningEffort: str(value.model_reasoning_effort) };
-    if (route) Object.assign(fields, { baseUrl: str(table.base_url), name: str(table.name) || undefined, apiKey: key(table.experimental_bearer_token) });
-    return { fields, keptKey };
-  }
-  const id = str(value.defaultProvider);
-  const fields: ConfigDraft = { model: str(value.defaultModel) };
-  if (id && !managedPattern.test(id) && id !== NEW_PI_PROVIDER_TEXT) Object.assign(fields, { mode: 'login', loginProvider: id });
-  return { fields, keptKey };
 }

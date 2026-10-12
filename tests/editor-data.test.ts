@@ -67,8 +67,9 @@ test('Claude alias routes are written and cleared; Codex reasoning effort is a o
     const other = (await f.manager.save({ app: 'chatgpt', name: 'Other', mode: 'api', baseUrl: 'https://gateway.example/v1', apiKey: 'sk-test-only', protocol: 'openai-responses', model: 'm2' })).providers.find(p => p.name === 'Other')!;
     await f.manager.activate(other.id);
     assert.equal((TOML.parse((await readText(toml))!) as any).model_reasoning_effort, 'medium');
-    // Editing the effort is an edit of what the switch writes.
-    assert.equal((await f.manager.save({ app: 'chatgpt', name: 'Other', id: other.id, mode: 'api', baseUrl: 'https://gateway.example/v1', protocol: 'openai-responses', model: 'm2', reasoningEffort: 'xhigh' })).diagnostics[1].edited, true);
+    // Editing the effort is an edit of what the switch writes, so saving the provider in use writes it.
+    await f.manager.save({ app: 'chatgpt', name: 'Other', id: other.id, mode: 'api', baseUrl: 'https://gateway.example/v1', protocol: 'openai-responses', model: 'm2', reasoningEffort: 'xhigh' });
+    assert.equal((TOML.parse((await readText(toml))!) as any).model_reasoning_effort, 'xhigh');
   } finally { await f.cleanup(); }
 });
 

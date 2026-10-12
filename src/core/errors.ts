@@ -9,6 +9,8 @@ export class PublicError extends Error {
 }
 export const GENERIC_MESSAGE = '操作失败：请检查配置格式、目录权限及字段内容；未完成的切换会恢复或保留恢复日志';
 export const INVALID_INPUT_MESSAGE = '输入内容无效，请检查各字段的格式与长度';
+// Prefix of a "save and use" whose save went through but whose switch failed; the provider now exists.
+export const SAVED_NOT_APPLIED = '供应商已保存，但没有写入配置文件：';
 export const PENDING_MESSAGE = '存在未完成的切换日志，且目标文件已被外部修改；请先在界面处理待决日志';
 
 export function publicError(error: unknown): string {

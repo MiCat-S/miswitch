@@ -144,7 +144,7 @@ test('restore of uninitialized configuration removes only files created by switc
     for (const path of f.paths.targets.pi) assert.equal(await readText(path), null);
   } finally { await f.cleanup(); }
 });
-test('external change marks drift; active delete is refused and editing keeps the record without touching the target', async () => {
+test('external change marks drift; active delete is refused; saving the provider in use applies it over the change, backed up', async () => {
   const f = await fixture();
   try {
     const p = await add(f.manager); await f.manager.activate(p.id);
@@ -152,30 +152,32 @@ test('external change marks drift; active delete is refused and editing keeps th
     assert.equal((await f.manager.snapshot()).diagnostics[0].state, 'drift');
     await assert.rejects(() => f.manager.remove(p.id));
     const edited = await f.manager.save({ ...input('claude'), id: p.id, model: 'changed-model' });
-    assert.equal(edited.active.claude?.providerId, p.id); assert.equal(edited.diagnostics[0].edited, true);
-    assert.equal(await readText(f.paths.targets.claude[0]), '{"external":"change"}');
+    assert.equal(edited.active.claude?.providerId, p.id); assert.equal(edited.diagnostics[0].state, 'written'); assert.equal(edited.diagnostics[0].edited, false);
+    assert.deepEqual(JSON.parse((await readText(f.paths.targets.claude[0]))!).external, 'change');
+    assert.equal(JSON.parse((await readText(f.paths.targets.claude[0]))!).model, 'changed-model');
   } finally { await f.cleanup(); }
 });
-test('editing the active provider is reported until rewritten; notes and Claude names do not count', async () => {
+test('an edit that cannot be applied stays reported as edited until it is written; notes and Claude names do not count', async () => {
   const f = await fixture();
   try {
+    const path = f.paths.targets.claude[0];
     const p = await add(f.manager); await f.manager.activate(p.id);
     let s = await f.manager.save({ ...input('claude'), id: p.id, name: 'Renamed', notes: 'only metadata' });
     assert.equal(s.diagnostics[0].state, 'written'); assert.equal(s.diagnostics[0].edited, false);
-    s = await f.manager.save({ ...input('claude'), id: p.id, model: 'changed-model' });
-    assert.equal(s.diagnostics[0].state, 'written'); assert.equal(s.diagnostics[0].edited, true);
+    // apiKeyHelper makes the switch refuse: the edit is stored, the file keeps the old provider, and the state says so.
+    const settings = JSON.parse((await readText(path))!); settings.apiKeyHelper = 'helper'; await f.put(path, JSON.stringify(settings));
+    await assert.rejects(() => f.manager.save({ ...input('claude'), id: p.id, model: 'changed-model' }), /供应商已保存，但没有写入配置文件：.*apiKeyHelper/);
+    s = await f.manager.snapshot();
+    assert.equal(s.providers[0].model, 'changed-model'); assert.equal(s.diagnostics[0].edited, true);
     assert.ok(s.diagnostics[0].warnings.some(w => w.includes('写入后已被编辑')));
     await assert.rejects(() => f.manager.remove(p.id), /请先切换/);
     // Editing back to what was written clears the report without a rewrite.
     s = await f.manager.save({ ...input('claude'), id: p.id });
     assert.equal(s.diagnostics[0].edited, false);
-    s = await f.manager.save({ ...input('claude'), id: p.id, model: 'changed-model' });
-    s = await f.manager.activate(p.id);
-    assert.equal(s.diagnostics[0].edited, false); assert.equal(JSON.parse((await readText(f.paths.targets.claude[0]))!).model, 'changed-model');
-    // The Codex name reaches config.toml, so renaming an active Codex provider counts.
+    // The Codex name reaches config.toml, so renaming an active Codex provider rewrites it.
     const codex = await add(f.manager, input('chatgpt', 'Codex')); await f.manager.activate(codex.id);
     s = await f.manager.save({ ...input('chatgpt', 'Codex renamed'), id: codex.id });
-    assert.equal(s.diagnostics[1].edited, true);
+    assert.equal(s.diagnostics[1].edited, false); assert.equal((TOML.parse((await readText(f.paths.targets.chatgpt[0]))!) as any).model_providers.custom.name, 'Codex renamed');
   } finally { await f.cleanup(); }
 });
 test('an active record written before definitions is backfilled from the unedited provider on its first edit', async () => {
@@ -185,11 +187,13 @@ test('an active record written before definitions is backfilled from the unedite
     const hubPath = join(f.paths.data, 'hub.json'); const hub = JSON.parse(await readFile(hubPath, 'utf8'));
     delete hub.active.claude.definition; await writeFile(hubPath, JSON.stringify(hub));
     assert.equal((await f.manager.snapshot()).diagnostics[0].edited, false);
+    // The backfilled definition is the unedited provider's, so the edit is seen and applied.
     const s = await f.manager.save({ ...input('claude'), id: p.id, baseUrl: 'https://gateway.test' });
-    assert.equal(s.active.claude?.providerId, p.id); assert.equal(s.diagnostics[0].edited, true);
+    assert.equal(s.active.claude?.providerId, p.id); assert.equal(s.diagnostics[0].edited, false);
+    assert.equal(JSON.parse((await readText(f.paths.targets.claude[0]))!).env.ANTHROPIC_BASE_URL, 'https://gateway.test');
   } finally { await f.cleanup(); }
 });
-test('only fields the adapter writes for the provider mode count as an edit', async () => {
+test('only fields the adapter writes for the provider mode count as an edit, and only those rewrite the files', async () => {
   const f = await fixture();
   try {
     const cases: [ProviderInput, Partial<ProviderInput>, boolean][] = [
@@ -203,8 +207,11 @@ test('only fields the adapter writes for the provider mode count as an edit', as
     ];
     for (const [original, change, edited] of cases) {
       const p = await add(f.manager, { ...original, name: randomUUID() }); await f.manager.activate(p.id);
+      const files = () => Promise.all(f.paths.targets[original.app].map(path => readText(path)));
+      const before = await files();
       const s = await f.manager.save({ ...original, name: p.name, ...change, id: p.id });
-      assert.equal(s.diagnostics.find(d => d.app === original.app)!.edited, edited, JSON.stringify(change));
+      assert.equal(s.diagnostics.find(d => d.app === original.app)!.edited, false, JSON.stringify(change));
+      assert.equal(JSON.stringify(await files()) !== JSON.stringify(before), edited, JSON.stringify(change));
     }
   } finally { await f.cleanup(); }
 });

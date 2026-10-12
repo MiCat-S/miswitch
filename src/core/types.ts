@@ -16,6 +16,11 @@ export function baseUrlIssues(value: string): string[] {
     return issues;
   } catch { return ['Base URL 格式无效']; }
 }
+// Vendor marks the interface can show for a provider; `letter` forces the initial. Unset means automatic.
+export const vendorIcons = ['claude', 'anthropic', 'openai', 'codex', 'deepseek', 'kimi', 'zhipu', 'zai', 'minimax', 'qwen', 'doubao', 'volcengine', 'mimo', 'qianfan', 'openrouter', 'siliconflow'] as const;
+export type VendorIcon = typeof vendorIcons[number];
+export const providerIcons = [...vendorIcons, 'letter'] as const;
+export type ProviderIcon = typeof providerIcons[number];
 const aliasModel = z.string().trim().min(1).max(200).optional();
 export const providerSchema = z.object({
   id: z.string().uuid().optional(), app: appSchema,
@@ -27,6 +32,8 @@ export const providerSchema = z.object({
   claudeAuth: z.enum(['api-key', 'bearer']).default('api-key'),
   loginProvider: z.string().regex(/^[a-zA-Z0-9_-]+$/).max(100).default('anthropic'),
   notes: z.string().max(2000).default(''),
+  // Display only: never written to a target file and not part of what a switch compares.
+  icon: z.enum(providerIcons).optional(),
   // Claude API mode only: model alias routes. The haiku route also serves background tasks.
   smallFastModel: aliasModel,
   sonnetModel: aliasModel,
@@ -87,18 +94,15 @@ export const configDraftSchema = z.object({
   contextWindow: draftText, autoCompactTokenLimit: draftText, reasoningEffort: draftText
 }).strict();
 export type ConfigDraft = z.infer<typeof configDraftSchema>;
-export const configViewRequestSchema = z.object({ app: appSchema, draft: configDraftSchema, providerId: z.string().uuid().optional(), text: z.string().max(8 * 1024 * 1024).optional() }).strict();
+export const configViewRequestSchema = z.object({ app: appSchema, draft: configDraftSchema, providerId: z.string().uuid().optional() }).strict();
 export type ConfigViewRequest = z.input<typeof configViewRequestSchema>;
-// `base` digests the global part of the file when the view was opened; a save compares it to detect outside edits.
+// `base` (global settings only) digests the global part of the file when it was read; a save compares it.
 export type ConfigView = { name: string; path: string; format: 'json' | 'toml'; text?: string; base?: string; error?: string };
-export const configParseRequestSchema = z.object({ app: appSchema, text: z.string().max(8 * 1024 * 1024) }).strict();
-export type ConfigParseRequest = z.input<typeof configParseRequestSchema>;
-export type ConfigFields = { fields?: ConfigDraft; keptKey?: boolean; error?: string };
-export const configEditSchema = z.object({ text: z.string().max(8 * 1024 * 1024), base: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
-export type ConfigEdit = z.input<typeof configEditSchema>;
+export const globalEditSchema = z.object({ app: appSchema, text: z.string().max(8 * 1024 * 1024), base: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+export type GlobalEdit = z.input<typeof globalEditSchema>;
 export interface Bridge {
   snapshot(): Promise<Snapshot>;
-  save(input: ProviderInput, config?: ConfigEdit): Promise<Snapshot>;
+  save(input: ProviderInput, options?: { activate?: boolean }): Promise<Snapshot>;
   remove(id: string): Promise<Snapshot>;
   activate(id: string): Promise<Snapshot>;
   restore(id: string): Promise<Snapshot>;
@@ -106,5 +110,8 @@ export interface Bridge {
   importLive(app?: AppId): Promise<Snapshot>;
   listModels(request: ModelListRequest): Promise<ModelList>;
   configView(request: ConfigViewRequest): Promise<ConfigView>;
-  parseConfig(request: ConfigParseRequest): Promise<ConfigFields>;
+  globalView(app: AppId): Promise<ConfigView>;
+  saveGlobal(request: GlobalEdit): Promise<Snapshot>;
+  // Called when providers change outside the window, e.g. from the menu bar.
+  onChanged(listener: () => void): () => void;
 }
