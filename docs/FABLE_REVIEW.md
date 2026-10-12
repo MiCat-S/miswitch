@@ -52,6 +52,8 @@ npm audit --omit=dev
 
 2026-10-12 第二轮审核（`docs/CODEX_REVIEW_2026-10-12.md`）后修正：R1 分级大小上限与写前预检，R2 备份完整集合验证，R3 表单草稿保留，R4 长文本换行，R5 窄视口布局，R6 旧版记录相容判定，R7 文字对比 token。P3 中已处理：loading/error/empty 分离、登录卡片文案、容器 PASS 判定；备份 I/O 的 metadata 分离与 CSS 作用域整理未处理。
 
+2026-10-12 第三轮审核（`docs/SOL_REVIEW_2026-10-12.md`）后修正：R1 新备份不再种入列表缓存、只缓存读取前后版本一致的元数据、略过备份前重新读取候选；R2 备份按持久序号排序，清理时保护本次写出的备份；R3 `definition` 改为按应用与模式投影实际写入字段；R4 `active` 记录保存规则集版本，旧记录按自己的规则集判定并提示迁移；R5 测试改用注入的读取函数，新增冷／暖缓存、读取中变化、候选重读、序号与时钟回拨、真实超出保留数、按模式的编辑判定、规则集升级；R6 记录降级边界。另：snapshot 的 `active` 只回传 `providerId` / `appliedAt`；启动读取失败时显示具体原因；刷新成功清除读取失败状态。Sol 的重现脚本保留原样，修正后各缺陷断言不再成立。
+
 2026-10-12 容器联调（`npm run test:container`，Docker via colima）：真实 Claude Code 2.1.296、Codex 0.162.1、Pi 0.73.1 对模拟 API 的请求 5/5 符合预期。联调发现并修正：Pi 0.73 要求自定义 Provider 在 `models.json` 内有 `apiKey`，否则整个文件拒绝加载；现写入占位字面量，真实密钥仍只在 `auth.json`，Pi 实际发送的是 `auth.json` 的密钥。对照 cc-switch 模板后调整：Codex Provider ID 固定为 `custom`；官方模式移除 `model_provider` 并把 `custom` 表置为 dormant；`requires_openai_auth = true` 仅在 `auth.json` 含登录凭据时写入；新增可选 `contextWindow` / `autoCompactTokenLimit`；`auth.json` 纳入目标文件（加锁、备份、校验、不改写）。容器案例扩展为“官方 `auth.json` 存在时第三方 token 优先、`auth.json` 未变、上下文键生效”，6/6 通过。
 
 ## 请重点审查

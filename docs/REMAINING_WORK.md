@@ -1,8 +1,8 @@
 # MiSwitch 待辦清單
 
-整理日期：2026-10-12。基準：Git HEAD `37e2673`。兩輪審核的 P1／P2 已全部修正；本清單只列尚未啟動的項目。
+整理日期：2026-10-12。本清單只列尚未啟動的項目；三輪審核（含 `docs/SOL_REVIEW_2026-10-12.md`）的 P1／P2 均已修正。
 
-同日已完成並移出清單：Claude 網關的小型／快速模型欄位（`ANTHROPIC_DEFAULT_HAIKU_MODEL`，容器內以真實 Claude Code 驗證）、備份列表改為按檔案版本快取元資料、編輯當前 Provider 保留標記並顯示「已編輯，待重新寫入」、`readHub()` 拒絕重複 ID、與最新備份內容相同時不再新增備份。行為說明見 `docs/TECHNICAL_DESIGN.md`。
+以 `37e2673` 為起點，同日已完成並移出清單：Claude 網關的小型／快速模型欄位（`ANTHROPIC_DEFAULT_HAIKU_MODEL`，容器內以真實 Claude Code 驗證）、備份列表改為按檔案版本快取元資料、編輯當前 Provider 保留標記並顯示「已編輯，待重新寫入」、`readHub()` 拒絕重複 ID、與最新備份內容相同時不再新增備份。行為說明見 `docs/TECHNICAL_DESIGN.md`。
 
 建議順序：先做核心小項，IPC 路徑與 asar 驗證併入打包工作，其餘屬發布階段。
 
@@ -15,6 +15,7 @@
 
 ## 介面與無障礙
 
+- [ ] Hub 結構損壞（例如重複 ID）時只顯示原因並暫停所有操作，沒有修復畫面。可提供只讀的衝突列表（不含密鑰）、開啟資料夾與完整備份入口，由使用者確認保留或改 ID。
 - [ ] CSS 仍有 `small`、`header`、`h2`、`label`、`input` 等全域選擇器，後續元件擴充時容易互相影響；逐步限定作用域。
 - [ ] 表單錯誤缺少 `aria-invalid`、`aria-describedby` 與首次錯誤聚焦。
 - [ ] 備註超過約七行改為卡片內捲動，尚無展開／收合機制。
@@ -24,6 +25,8 @@
 - [ ] 容器案例缺少 Pi 的 `openai-responses` 協定。
 - [ ] 容器案例沒有真實登入情境：Claude／Codex 的官方 OAuth、Codex 使用 `cli_auth_credentials_store = "keyring"` 時 `auth.json` 不存在的行為。
 - [ ] IPC 來源比對（`src/desktop/main.ts` 以 `pathToFileURL().href` 對比 frame URL）未在含空白或非 ASCII 的路徑、以及 asar 打包後驗證。
+- [ ] Claude 背景任務的動態驗證：容器只驗證 `--model haiku` 主對話走小型／快速模型，尚未觸發任何真正的背景請求。
+- [ ] 備份列表快取的版本鍵（dev、ino、size、mtime、ctime）未在 Windows 與時間精度粗的檔案系統上實測。
 - [ ] 真實供應商聯調：現有容器測試只驗證對模擬 API 的路由，不驗證協定相容、串流、工具調用。
 
 ## 發布前工作

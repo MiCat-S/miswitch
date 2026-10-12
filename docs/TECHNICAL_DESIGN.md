@@ -92,6 +92,7 @@ scripts/
     "chatgpt": {
       "providerId": "10000000-0000-4000-8000-000000000001",
       "appliedAt": "2026-10-12T06:01:00.000Z",
+      "rules": 2,
       "fingerprint": "sha256-of-canonical-managed-fields",
       "definition": "sha256-of-provider-fields-written",
       "hashes": {
@@ -105,7 +106,7 @@ scripts/
 | 字段 | 类型与约束 | 作用 |
 | --- | --- | --- |
 | `version` | 固定 `1` | 为后续迁移留出版本标记 |
-| `id` | UUID，Hub 内不得重复 | 与供应商名称、模型名解耦；读取到重复 ID 的 Hub 直接拒绝 |
+| `id` | UUID，Hub 内不得重复 | 与供应商名称、模型名解耦；读取到重复 ID 的 Hub 直接拒绝（写入全部暂停，界面显示原因，需手动备份后修正 `hub.json`） |
 | `app` | `claude / chatgpt / pi` | 唯一支持的三个应用 |
 | `mode` | `api / login` | API 配置或使用已有官方登录 |
 | `name` | 非空，最大 100 字符 | 展示名称 |
@@ -119,11 +120,16 @@ scripts/
 | `smallFastModel` | 可选，最大 200 字符，仅 Claude API 模式 | 写入 `ANTHROPIC_DEFAULT_HAIKU_MODEL`：haiku 别名与后台任务使用的模型 |
 | `contextWindow` / `autoCompactTokenLimit` | 可选正整数，仅 Codex | 写入 `model_context_window` / `model_auto_compact_token_limit` |
 | `updatedAt` / `appliedAt` | UTC ISO8601 | UI 按用户本地时区显示 |
+| `active.*.rules` | 正整数，可选 | 计算 `fingerprint` 与 `definition` 时使用的管理字段规则集；缺省为规则集 1（`722c119` 及之前） |
 | `active.*.fingerprint` | SHA-256 | 本工具管理字段的规范化 JSON 摘要；状态判定以此为准，CLI 自行重排文件不算漂移 |
 | `active.*.hashes` | 路径 → SHA-256 | 上次写入的精确字节；仅用于提示“文件已被重排” |
-| `active.*.definition` | SHA-256，可选 | 写入时 Provider 中会进入目标文件的字段（不含备注、更新时间；名称只对 Codex 计入）；与当前 Provider 不同即“写入后已编辑” |
+| `active.*.definition` | SHA-256，可选 | 写入时该应用与模式下会进入目标文件的 Provider 字段；与当前 Provider 不同即“写入后已编辑” |
 
-向前端返回 `PublicProvider` 时剔除 `apiKey`，只返回 `hasKey`。编辑框留空保留旧密钥；已保存的密钥不会自动填回 renderer。编辑当前 Provider 不写目标文件，也不清除 `active` 记录：目标文件里仍是它写入的设置，所以它仍然不能删除，必须先切换到另一组。状态检测比较 `definition` 与当前 Provider，有差异时界面显示“已编辑，待重新写入”，改回原值后提示自动消失；只改备注不算编辑。旧版本写入的记录没有 `definition`，旧版本在编辑时会清除记录，所以现存记录对应的必然是未编辑的 Provider，第一次编辑时用编辑前的 Provider 补写。
+向前端返回 `PublicProvider` 时剔除 `apiKey`，只返回 `hasKey`；`active` 只返回 `providerId` 与 `appliedAt`，各种摘要留在主进程。编辑框留空保留旧密钥；已保存的密钥不会自动填回 renderer。编辑当前 Provider 不写目标文件，也不清除 `active` 记录：目标文件里仍是它写入的设置，所以它仍然不能删除，必须先切换到另一组。状态检测比较 `definition` 与当前 Provider，有差异时界面显示“已编辑，待重新写入”，改回原值后提示自动消失。`definition` 只投影该应用与模式下 Adapter 实际写入的字段：Claude 为模型，API 模式另加 Base URL、密钥、鉴权头与小型／快速模型；Codex 为模型与两个上下文键，API 模式另加名称、Base URL 与密钥；Pi 为模型，API 模式另加 Provider ID、Base URL、协议与密钥，登录模式另加登录 Provider ID。因此只改备注、名称（Codex API 模式除外）或当前模式不使用的字段都不算编辑。`37e2673` 写入的记录没有 `definition`，那时编辑会清除记录，所以现存记录对应的必然是未编辑的 Provider，第一次编辑时用编辑前的 Provider 按记录自己的规则集补写。
+
+**规则集。** 管理字段的范围可能随版本扩大（规则集 2 新增清理 fable 与旧 small/fast 路由，并改用上述投影）。每条 `active` 记录保存自己的 `rules`，状态检测与编辑判定都按该规则集计算，所以单纯升级不会把未改动的文件报成外部修改。旧规则集记录若在文件中仍有新规则集会清理的键，诊断提示“重新写入后按新规则清理”；重新启用后记录改用当前规则集。
+
+**降级边界。** 旧版本的 Provider Schema 是 strict 的：保存过 `smallFastModel` 的 Hub 无法被 `722c119` 之前的版本打开（只读拒绝，不会覆写）。降级前先备份整个 store，再从 `hub.json` 删除该字段。`active.*.rules`、备份的 `info.sequence` 不影响旧版本读取。
 
 备份 Schema：
 
@@ -134,6 +140,7 @@ scripts/
     "id": "20000000-0000-4000-8000-000000000002",
     "app": "claude",
     "createdAt": "2026-10-12T06:01:00.000Z",
+    "sequence": 12,
     "files": ["settings.json"]
   },
   "entries": [
@@ -148,7 +155,11 @@ scripts/
 
 `before: null` 表示原文件不存在；恢复会删除这次创建的文件，保留目录。备份保存原始文本，恢复时能恢复格式、空格、换行和注释；普通切换中的 JSON / TOML 序列化保留字段含义，但不保证排版和注释保留。备份按应用各保留 10 次，核心构造参数可设为 1–100。单个备份文件损坏时会被跳过并在界面以警告列出文件名，不影响其他操作。
 
-列表只需要元数据：`Manager` 按文件版本（设备、inode、大小、mtime、ctime）缓存每个备份的解析与校验结果，未变化的文件不再读取；恢复时重新读取并校验选中的那一个。若本次各目标的 before 与该应用最新一份备份完全相同（按路径与原文计算摘要），则不再写入新备份，避免反复启用同一配置挤掉保留配额中的不同历史；恢复日志照常写入。
+**次序。** `info.sequence` 是所有应用共用的递增序号，在 Hub 锁内取现有最大值加一。列表、保留和去重都按序号判断新旧；`createdAt` 只有毫秒精度且受时钟回拨影响，仅用于显示和排列没有序号的旧备份（这些一律视为更旧）。清理保留数时，本次交易刚写出的备份永远不在淘汰候选内。
+
+**列表缓存。** `Manager` 按文件版本（设备、inode、大小、mtime、ctime）缓存每个备份的解析与校验结果，未变化的文件不再读取。只有读取前后版本一致时才缓存，避免把读取途中被改写的内容绑到新版本；新写出的备份不直接种入缓存，由下一次列表实际读取。恢复时重新读取并校验选中的那一个。版本键是启发式：在 Windows 或时间精度粗的文件系统上尚未实测。
+
+**略过相同备份。** 若本次各目标的 before 与该应用最新一份备份完全相同（按路径与原文计算摘要），不再写入新备份，避免反复启用同一配置挤掉保留配额中的不同历史；恢复日志照常写入。缓存中的摘要只用来提名候选：略过前重新读取并校验该候选，候选已变化、损坏或被删除时照常写入新备份。
 
 备份必须包含该应用当前的完整目标文件集合，否则视为损坏并跳过；只接受明确列出的旧版集合（Codex 仅含 `config.toml` 的备份，恢复时不触碰 `auth.json`）。部分文件集合的恢复会让 Pi 的 `defaultProvider` 指向不存在的 Provider，因此在任何写入前就拒绝。
 
@@ -184,9 +195,9 @@ API 模式示例：
 }
 ```
 
-选择 Bearer 鉴权时写 `ANTHROPIC_AUTH_TOKEN`，不会同时留下 `ANTHROPIC_API_KEY`。切换时清除用户文件中的冲突键：旧 API Key、Bearer、Base URL、模型和各别名的模型路由（haiku / sonnet / opus / fable，以及 haiku 的旧名 `ANTHROPIC_SMALL_FAST_MODEL`，与 cc-switch 相同）、Bedrock / Vertex / Foundry 开关、`CLAUDE_CODE_OAUTH_TOKEN`。`CLAUDE_CODE_SUBAGENT_MODEL` 接受别名，属于用户偏好，保留不动。
+选择 Bearer 鉴权时写 `ANTHROPIC_AUTH_TOKEN`，不会同时留下 `ANTHROPIC_API_KEY`。切换时清除用户文件中的冲突键：旧 API Key、Bearer、Base URL、模型和各别名的模型路由（haiku / sonnet / opus / fable，以及 haiku 的旧名 `ANTHROPIC_SMALL_FAST_MODEL`，与 cc-switch 相同）、Bedrock / Vertex / Foundry 开关、`CLAUDE_CODE_OAUTH_TOKEN`。`CLAUDE_CODE_SUBAGENT_MODEL` 接受别名与完整模型 ID，属于用户偏好，保留不动；明确指定的子代理模型不随切换改变。这些改动都有原文备份，其他环境变量保持原值。检测到 `apiKeyHelper` 时直接停止，避免无声删除用户的动态鉴权设置。
 
-网关通常只提供少数模型 ID。Claude Code 的后台任务和 haiku 别名走 `ANTHROPIC_DEFAULT_HAIKU_MODEL`，未设置时请求 Anthropic 默认的 Haiku ID（[模型配置](https://code.claude.com/docs/en/model-config)）。Provider 的“小型／快速模型”填写后写入该变量，并作为管理字段计入漂移判定；留空则不写。容器内用 Claude Code 2.1.296 验证：`claude -p --model haiku` 请求的正是该字段的模型 ID。这些改动都有原文备份，其他环境变量保持原值。检测到 `apiKeyHelper` 时直接停止，避免无声删除用户的动态鉴权设置。
+网关通常只提供少数模型 ID。Claude Code 的后台任务和 haiku 别名走 `ANTHROPIC_DEFAULT_HAIKU_MODEL`，未设置时请求 Anthropic 默认的 Haiku ID（[模型配置](https://code.claude.com/docs/en/model-config)）。Provider 的“小型／快速模型”填写后写入该变量，并作为管理字段计入漂移判定；留空则不写。容器内用 Claude Code 2.1.296 验证：`claude -p --model haiku` 的主对话请求正是该字段的模型 ID。后台任务走同一路由的依据是官方文档与 2.1.296 可执行文件中的解析逻辑，容器测试没有动态触发后台任务。
 
 登录模式保留 CLI 自己管理的登录，仅清理本文件 API 路由并设置默认模型。它不意味着登录已完成，也不读取钥匙串里的账号信息。系统环境、项目级配置、profiles / federation、gateway session 和 managed settings 仍可能有更高优先级。
 
@@ -291,7 +302,7 @@ Pi 的 `/model` 可重载模型配置，但启动默认值不等于已有会话�
 2. 从固定路径列表解析目标，不接受 renderer 传入路径；创建缺失目录，拒绝符号链接及异常文件。
 3. 按固定排序取得目标文件锁。Pi `auth.json` 使用与官方一致的 `proper-lockfile` 约定。
 4. 读取原文；JSON / TOML 解析失败时不覆盖；Adapter 在内存中生成所有结果。
-5. 保存一组完整备份（与该应用最新备份的 before 完全相同时跳过），再写 `pending.json`，包含目标及 Hub 的 before / after。
+5. 保存一组完整备份（与该应用最新备份的 before 完全相同、且重新读取确认后跳过），再写 `pending.json`，包含目标及 Hub 的 before / after。
 6. 各文件先写同目录唯一临时文件，`fsync`，比较当前内容是否仍等于 before，再 `rename`，同步目录。
 7. Hub 最后写入，记录 Provider ID、时间和目标文件 hash。
 8. 回读所有文件验证；删除并同步恢复日志后才报告成功。
@@ -404,7 +415,7 @@ interface Bridge {
 
 已经验证核心逻辑、真实文件读写和实际 Electron 窗口 / preload IPC / React 表单流程。所有测试使用临时路径与合成密钥。
 
-`npm run test:container`（`tests/container/`）在 Docker 内安装固定版本的 Claude Code 2.1.296、Codex CLI 0.162.1、Pi 0.73.1，用 `Manager` 写入配置后以 `claude -p`、`codex exec`、`pi -p` 请求容器内的模拟 API（`mock-server.mjs`，支持三种协议的流式与非流式响应），断言实际请求的路径、鉴权头与模型。2026-10-12 结果：Claude x-api-key、Bearer 与 haiku 别名走小型／快速模型，Codex `experimental_bearer_token` 与保留官方 `auth.json`，Pi `openai-completions` 与 `anthropic-messages`，共 7 项通过。附加实验：`experimental_bearer_token` 在 `auth.json` 为 API Key 登录或 ChatGPT 登录、`requires_openai_auth` 设或不设的四种组合下都优先生效；`http_headers` 也可行但未采用。
+`npm run test:container`（`tests/container/`）在 Docker 内安装固定版本的 Claude Code 2.1.296、Codex CLI 0.162.1、Pi 0.73.1，用 `Manager` 写入配置后以 `claude -p`、`codex exec`、`pi -p` 请求容器内的模拟 API（`mock-server.mjs`，支持三种协议的流式与非流式响应），断言实际请求的路径、鉴权头与模型。2026-10-12 结果：Claude x-api-key、Bearer 与 haiku 别名走小型／快速模型（主对话请求，未触发后台任务），Codex `experimental_bearer_token` 与保留官方 `auth.json`，Pi `openai-completions` 与 `anthropic-messages`，共 7 项通过。附加实验：`experimental_bearer_token` 在 `auth.json` 为 API Key 登录或 ChatGPT 登录、`requires_openai_auth` 设或不设的四种组合下都优先生效；`http_headers` 也可行但未采用。
 
 没有用真实密钥请求供应商，也没有修改真实 CLI 配置或验证真实账号；Windows/Linux 安装运行、完整 CLI 协议联调、安装包签名/公证与客户端版本矩阵需在发布前进行。当前没有将一个运行中的 OAuth 会话强制切为其他账号的能力。
 
