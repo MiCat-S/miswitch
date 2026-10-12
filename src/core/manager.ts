@@ -4,7 +4,7 @@ import { readdir, unlink } from 'node:fs/promises';
 import { z } from 'zod';
 import { patchProvider, claudeEnvKeys, jsonObject, asJson, managedFingerprint } from './adapters';
 import { PENDING_MESSAGE, PublicError } from './errors';
-import { atomicWrite, ensureDirectory, hash, readText, replaceText, syncDirectory, withLocks } from './files';
+import { ARCHIVE_LIMIT, TARGET_LIMIT, atomicWrite, byteLength, ensureDirectory, hash, readText, replaceText, syncDirectory, withLocks } from './files';
 import type { Paths } from './paths';
 import { appSchema, providerSchema, type AppId, type BackupInfo, type Hub, type PendingInfo, type Provider, type ProviderInput, type Snapshot } from './types';
 
@@ -13,7 +13,9 @@ type Journal = { version: 1; id: string; app: AppId; createdAt: string; entries:
 type Backup = { version: 1; info: BackupInfo; entries: Entry[] };
 const uuid = z.string().uuid();
 // A pending id is the journal UUID, or the SHA-256 of pending.json when the file cannot be parsed.
-const pendingId = z.string().regex(/^[a-f0-9-]{36}$|^[a-f0-9]{64}$/);
+const pendingId = z.string().regex(/^[a-f0-9-]{36}$|^[a-f0-9]{64}$|^unreadable$/);
+const unreadable = Symbol('unreadable');
+const invalidArchive = Symbol('invalid-archive');
 const apps: AppId[] = ['claude', 'chatgpt', 'pi'];
 
 export class Manager {
@@ -52,31 +54,49 @@ export class Manager {
     if (new Set(entries.map(e => e.path)).size !== entries.length || entries.some(e => !allowed.has(e.path))) throw new PublicError('恢复日志包含未授权路径');
     return entries;
   }
+  // A backup must hold the complete file set of its app. Older backups written before a target was
+  // added are accepted only through the explicit legacy sets below; any other subset is rejected,
+  // because restoring part of a multi-file configuration can leave the CLI pointing at nothing.
+  private static legacySets: Partial<Record<AppId, string[][]>> = { chatgpt: [['config.toml']] };
+  private validateBackupSet(app: AppId, entries: Entry[]): void {
+    const names = entries.map(e => basename(e.path)).sort();
+    const full = this.paths.targets[app].map(p => basename(p)).sort();
+    const same = (a: string[], b: string[]) => a.length === b.length && a.every((n, i) => n === b[i]);
+    if (entries.some(e => !this.paths.targets[app].includes(e.path))) throw new PublicError('备份应用与路径不符');
+    if (same(names, full) || (Manager.legacySets[app] ?? []).some(set => same(names, [...set].sort()))) return;
+    throw new PublicError('备份文件集合不完整');
+  }
+  private readArchive(path: string): Promise<string | null> { return readText(path, ARCHIVE_LIMIT); }
   private parseJournal(raw: string): Journal {
     const j = z.object({ version: z.literal(1), id: uuid, app: appSchema, createdAt: z.string().datetime(), entries: z.unknown() }).parse(this.decode(raw));
     return { ...j, entries: this.validateEntries(j.entries, true) };
   }
   private targetsOf(journal: Journal): string[] { return journal.entries.filter(e => e.path !== this.hubPath).map(e => e.path); }
   // Rolls back entries that still hold our own bytes. Conflicting files are skipped or rejected; the journal is removed afterwards.
-  private async rollback(journal: Journal, current: (string | null)[], check: () => void, skipConflicts: boolean): Promise<void> {
+  private async rollback(journal: Journal, current: (string | null | typeof unreadable)[], check: () => void, skipConflicts: boolean): Promise<void> {
     for (let i = journal.entries.length - 1; i >= 0; i--) {
       check();
       const e = journal.entries[i];
-      if (current[i] === e.before) continue;
-      if (current[i] !== e.after) { if (skipConflicts) continue; throw new PublicError(PENDING_MESSAGE); }
-      await replaceText(e.path, e.before, current[i]);
+      const now = current[i];
+      if (now === e.before) continue;
+      if (now === unreadable || now !== e.after) { if (skipConflicts) continue; throw new PublicError(PENDING_MESSAGE); }
+      await replaceText(e.path, e.before, now);
     }
     await unlink(this.journalPath); await syncDirectory(this.paths.data);
   }
   // Recovery rolls incomplete transactions back. An external edit is reported, never overwritten.
+  // Files that cannot be read (symlinked, oversized, wrong type) are treated as conflicts, never rolled back.
+  private readCurrent(entries: Entry[]): Promise<(string | null | typeof unreadable)[]> {
+    return Promise.all(entries.map(e => readText(e.path).catch((): typeof unreadable => unreadable)));
+  }
   private async recover(check: () => void): Promise<PendingInfo | null> {
-    const raw = await readText(this.journalPath);
+    const raw = await this.readArchive(this.journalPath).catch(() => invalidArchive);
     if (raw === null) return null;
     let journal: Journal;
-    try { journal = this.parseJournal(raw); }
-    catch { return { id: hash(raw), app: null, createdAt: null, paths: [], conflicts: [], valid: false }; }
+    try { journal = this.parseJournal(raw as string); }
+    catch { return { id: raw === invalidArchive ? 'unreadable' : hash(raw as string), app: null, createdAt: null, paths: [], conflicts: [], valid: false }; }
     return withLocks(this.targetsOf(journal), async targetCheck => {
-      const current = await Promise.all(journal.entries.map(e => readText(e.path)));
+      const current = await this.readCurrent(journal.entries);
       const conflicts = journal.entries.filter((e, i) => current[i] !== e.before && current[i] !== e.after).map(e => e.path);
       if (conflicts.length) return { id: journal.id, app: journal.app, createdAt: journal.createdAt, paths: this.targetsOf(journal), conflicts, valid: true };
       await this.rollback(journal, current, () => { check(); targetCheck(); }, false);
@@ -95,9 +115,14 @@ export class Manager {
     const journal: Journal = { version: 1, id: randomUUID(), app, createdAt: new Date().toISOString(), entries };
     const targets = entries.filter(e => e.path !== this.hubPath);
     const backup: Backup = { version: 1, info: { id: journal.id, app, createdAt: journal.createdAt, files: targets.map(e => basename(e.path)) }, entries: targets };
+    // Every output is bounded before anything is written, so the verify, rollback and recovery reads cannot fail on size.
+    if (entries.some(e => byteLength(e.after) > TARGET_LIMIT)) throw new PublicError('切换后的配置超过 8 MiB 限制；已停止，未修改任何文件');
+    const encodedBackup = this.encode(backup);
+    const encodedJournal = this.encode(journal);
+    if (byteLength(encodedBackup) > ARCHIVE_LIMIT || byteLength(encodedJournal) > ARCHIVE_LIMIT) throw new PublicError('备份或恢复日志超过 128 MiB 限制；已停止，未修改任何文件');
     await ensureDirectory(this.backupDir);
-    await atomicWrite(join(this.backupDir, `${journal.id}.json`), this.encode(backup), null);
-    await atomicWrite(this.journalPath, this.encode(journal), null);
+    await atomicWrite(join(this.backupDir, `${journal.id}.json`), encodedBackup, null);
+    await atomicWrite(this.journalPath, encodedJournal, null);
     try {
       // Unchanged entries (e.g. Codex auth.json) stay locked, backed up and verified but are not rewritten.
       for (const e of entries) { check(); if (e.after !== e.before) await this.write(e.path, e.after, e.before); }
@@ -130,12 +155,13 @@ export class Manager {
     const skipped: string[] = [];
     for (const name of names) {
       try {
-        const raw = await readText(join(this.backupDir, name));
+        const raw = await this.readArchive(join(this.backupDir, name));
         if (!raw) throw new Error('empty');
         const b = z.object({ version: z.literal(1), info: z.object({ id: uuid, app: appSchema, createdAt: z.string().datetime(), files: z.array(z.string()) }), entries: z.unknown() }).parse(this.decode(raw));
         if (`${b.info.id}.json` !== name) throw new Error('id mismatch');
         const entries = this.validateEntries(b.entries, false);
-        if (entries.some(e => !this.paths.targets[b.info.app].includes(e.path))) throw new Error('app mismatch');
+        this.validateBackupSet(b.info.app, entries);
+        if (!entries.every(e => b.info.files.includes(basename(e.path)))) throw new Error('files mismatch');
         list.push({ ...b, entries });
       } catch { skipped.push(name); }
     }
@@ -157,12 +183,16 @@ export class Manager {
         try { return await readText(path); } catch { unreadable = true; return null; }
       }));
       const record = hub.active[app];
-      const bytesMatch = !!record && !unreadable && paths.every((path, i) => record.hashes[path] === hash(originals[i]));
+      // Records written before fingerprints (or before a target was added) only know the bytes they wrote.
+      // They are judged by those bytes alone; a missing schema field is not evidence of external edits.
+      const legacy = !!record && record.fingerprint === undefined;
+      const bytesMatch = !!record && !unreadable && paths.every((path, i) => legacy && !(path in record.hashes) ? true : record.hashes[path] === hash(originals[i]));
       const current = unreadable ? null : managedFingerprint(app, originals);
-      const written = !!record && record.fingerprint !== undefined && current !== null && hash(current) === record.fingerprint;
+      const written = !!record && (legacy ? bytesMatch : current !== null && hash(current) === record.fingerprint);
       const state = !record ? 'none' as const : written ? 'written' as const : 'drift' as const;
       const warnings: string[] = ['配置写入仅保证文件同步；运行中会话、项目配置与管理员策略可能覆盖选择。'];
       if (unreadable) warnings.push('部分配置无法读取，请检查符号链接、文件类型和目录权限。');
+      if (legacy) warnings.push('当前写入记录来自旧版本，按原文逐字节比较；重新启用后改为字段级判定。');
       if (state === 'written' && !bytesMatch) warnings.push('目标文件已被其他程序重写（例如 CLI 自行保存设置），但本工具管理的字段未变。');
       if (state === 'drift') warnings.push('本工具管理的字段已被外部修改，或文件无法解析；重新启用会先备份再覆盖这些字段。');
       const variables = app === 'claude' ? [...claudeEnvKeys, 'ANTHROPIC_PROFILE', 'ANTHROPIC_FEDERATION_RULE_ID', 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST'] : app === 'chatgpt' ? ['OPENAI_API_KEY', 'OPENAI_BASE_URL'] : ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'];
@@ -218,7 +248,7 @@ export class Manager {
       if (!provider) throw new PublicError('配置不存在');
       const paths = this.paths.targets[provider.app];
       await withLocks(paths, async targetCheck => {
-        const before = await Promise.all(paths.map(readText));
+        const before = await Promise.all(paths.map(path => readText(path)));
         const key = provider.apiKey;
         if (provider.mode === 'api' && !key) throw new PublicError('API 密钥不可用');
         const after = patchProvider(provider, before, key);
@@ -254,15 +284,16 @@ export class Manager {
   async resolveJournal(id: string): Promise<Snapshot> {
     pendingId.parse(id);
     return withLocks([this.hubPath], async check => {
-      const raw = await readText(this.journalPath);
+      const raw = await this.readArchive(this.journalPath).catch(() => invalidArchive);
       if (raw === null) throw new PublicError('没有待决日志');
       let journal: Journal | null = null;
-      try { journal = this.parseJournal(raw); } catch { journal = null; }
-      if ((journal ? journal.id : hash(raw)) !== id) throw new PublicError('待决日志已变化，请刷新后重试');
+      try { journal = this.parseJournal(raw as string); } catch { journal = null; }
+      const actual = journal ? journal.id : raw === invalidArchive ? 'unreadable' : hash(raw as string);
+      if (actual !== id) throw new PublicError('待决日志已变化，请刷新后重试');
       if (!journal) { await unlink(this.journalPath); await syncDirectory(this.paths.data); return this.snapshotUnlocked(); }
       const valid = journal;
       await withLocks(this.targetsOf(valid), async targetCheck => {
-        const current = await Promise.all(valid.entries.map(e => readText(e.path)));
+        const current = await this.readCurrent(valid.entries);
         await this.rollback(valid, current, () => { check(); targetCheck(); }, true);
       });
       return this.snapshotUnlocked();

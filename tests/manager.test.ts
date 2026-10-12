@@ -283,6 +283,65 @@ test('a malformed backup file is skipped with a warning instead of blocking snap
     await f.manager.restore(s.backups[0].id);
   } finally { await f.cleanup(); }
 });
+test('oversized outputs are refused before any write; large but legal backups and journals stay readable', async () => {
+  const f = await fixture();
+  try {
+    // 4 MB compact JSON expands to ~9 MB when pretty-printed: must be refused before touching anything.
+    const path = f.paths.targets.claude[0];
+    const compact = JSON.stringify({ unrelated: Array(1_000_000).fill('x') });
+    await f.put(path, compact);
+    const p = await add(f.manager);
+    await assert.rejects(() => f.manager.activate(p.id), /超过 8 MiB/);
+    assert.equal(await readText(path), compact);
+    const s = await f.manager.snapshot();
+    assert.equal(s.backups.length, 0); assert.equal(s.pending, null); assert.equal(s.diagnostics[0].state, 'none');
+    // 4.2 MiB target → ~8.8 MB backup: larger than a target but still a readable archive.
+    await f.put(path, JSON.stringify({ unrelated: 'x'.repeat(Math.ceil(4.2 * 1024 * 1024)) }));
+    const applied = await f.manager.activate(p.id);
+    assert.equal(applied.backups.length, 1); assert.deepEqual(applied.warnings, []);
+    const raw = await readFile(join(f.paths.data, 'backups', `${applied.backups[0].id}.json`), 'utf8');
+    assert.ok(raw.length > 8 * 1024 * 1024);
+    const journal = { version: 1, id: randomUUID(), app: 'claude', createdAt: new Date().toISOString(), entries: JSON.parse(raw).entries };
+    await f.put(join(f.paths.data, 'pending.json'), JSON.stringify(journal));
+    const recovered = await f.manager.snapshot();
+    assert.equal(recovered.pending, null); assert.equal(await readText(join(f.paths.data, 'pending.json')), null);
+    assert.equal((await readText(path))!.length, JSON.parse(raw).entries[0].before.length);
+  } finally { await f.cleanup(); }
+});
+test('an incomplete backup is skipped and cannot be restored; the legacy Codex single-file set is accepted', async () => {
+  const f = await fixture();
+  try {
+    const a = await add(f.manager, input('pi', 'A')); await f.manager.activate(a.id);
+    const b = await add(f.manager, input('pi', 'B')); const switched = await f.manager.activate(b.id);
+    const file = join(f.paths.data, 'backups', `${switched.backups[0].id}.json`);
+    const broken = JSON.parse(await readFile(file, 'utf8')); broken.entries = broken.entries.slice(0, 1); await writeFile(file, JSON.stringify(broken));
+    const listed = await f.manager.snapshot();
+    assert.ok(!listed.backups.some(x => x.id === switched.backups[0].id)); assert.equal(listed.warnings.length, 1);
+    await assert.rejects(() => f.manager.restore(switched.backups[0].id), /备份不存在/);
+    const settings = JSON.parse((await readText(f.paths.targets.pi[2]))!); const models = JSON.parse((await readText(f.paths.targets.pi[0]))!);
+    assert.ok(models.providers[settings.defaultProvider]);
+    // Legacy Codex backup with only config.toml (written before auth.json became a target) restores that file only.
+    const [toml, auth] = f.paths.targets.chatgpt; await f.put(auth, '{"auth_mode":"chatgpt","tokens":{"access_token":"keep"}}');
+    const legacyId = randomUUID();
+    await f.put(join(f.paths.data, 'backups', `${legacyId}.json`), JSON.stringify({ version: 1, info: { id: legacyId, app: 'chatgpt', createdAt: new Date().toISOString(), files: ['config.toml'] }, entries: [{ path: toml, before: 'model = "legacy"\n', after: null }] }));
+    const restored = await f.manager.restore(legacyId);
+    assert.equal(await readText(toml), 'model = "legacy"\n'); assert.equal(await readText(auth), '{"auth_mode":"chatgpt","tokens":{"access_token":"keep"}}');
+    assert.equal(restored.warnings.length, 1);
+  } finally { await f.cleanup(); }
+});
+test('a legacy active record without fingerprint is judged by its byte hashes, not reported as drift', async () => {
+  const f = await fixture();
+  try {
+    const p = await add(f.manager); await f.manager.activate(p.id);
+    const hubPath = join(f.paths.data, 'hub.json'); const hub = JSON.parse(await readFile(hubPath, 'utf8'));
+    delete hub.active.claude.fingerprint; await writeFile(hubPath, JSON.stringify(hub));
+    let d = (await f.manager.snapshot()).diagnostics[0];
+    assert.equal(d.state, 'written'); assert.ok(d.warnings.some(w => w.includes('旧版本')));
+    await f.put(f.paths.targets.claude[0], '{"changed":true}');
+    d = (await f.manager.snapshot()).diagnostics[0];
+    assert.equal(d.state, 'drift');
+  } finally { await f.cleanup(); }
+});
 test('publicError forwards only static messages', () => {
   assert.equal(publicError(new PublicError('配置不存在')), '配置不存在');
   assert.throws(() => providerSchema.parse({ ...input('claude'), baseUrl: 'http://gateway.test', apiKey: 'sk SECRET' }), (error: unknown) => {

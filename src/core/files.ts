@@ -6,6 +6,12 @@ import lockfile from 'proper-lockfile';
 import { PublicError } from './errors';
 
 export const hash = (text: string | null) => text === null ? 'missing' : createHash('sha256').update(text).digest('hex');
+// Target configuration files and the Hub are bounded by TARGET_LIMIT. Backups and journals aggregate
+// before/after text of several targets, so they get their own larger bound. transaction() checks every
+// output against these limits before touching any file, so everything we write can be read back.
+export const TARGET_LIMIT = 8 * 1024 * 1024;
+export const ARCHIVE_LIMIT = 128 * 1024 * 1024;
+export const byteLength = (text: string | null) => text === null ? 0 : Buffer.byteLength(text, 'utf8');
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === 'ENOENT';
 
 export async function rejectSymlinks(path: string): Promise<void> {
@@ -26,13 +32,13 @@ export async function ensureDirectory(path: string): Promise<void> {
   await mkdir(path, { recursive: true, mode: 0o700 });
   await rejectSymlinks(path);
 }
-export async function readText(path: string): Promise<string | null> {
+export async function readText(path: string, limit = TARGET_LIMIT): Promise<string | null> {
   await rejectSymlinks(path);
   try {
     const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const stat = await file.stat();
-      if (!stat.isFile() || stat.size > 8 * 1024 * 1024) throw new PublicError('配置不是普通文件，或超过 8 MiB 限制');
+      if (!stat.isFile() || stat.size > limit) throw new PublicError(limit === TARGET_LIMIT ? '配置不是普通文件，或超过 8 MiB 限制' : '备份或恢复日志不是普通文件，或超过 128 MiB 限制');
       return await file.readFile('utf8');
     } finally { await file.close(); }
   } catch (error) { if (missing(error)) return null; throw error; }
