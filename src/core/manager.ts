@@ -255,7 +255,7 @@ export class Manager {
     const { list, skipped } = await this.backups();
     const warnings = skipped.length ? [`有 ${skipped.length} 个备份文件无法解析，已跳过：${skipped.join('、')}`] : [];
     const active = Object.fromEntries(Object.entries(hub.active).map(([app, r]) => [app, { providerId: r!.providerId, appliedAt: r!.appliedAt }]));
-    return { providers: hub.providers.map(({ apiKey, ...p }) => ({ ...p, hasKey: !!apiKey })), active, diagnostics, backups: list.map(b => b.info), pending, warnings };
+    return { providers: hub.providers.map(({ apiKey, ...p }) => ({ ...p, hasKey: !!apiKey })), active, diagnostics, backups: list.map(b => b.info), pending, warnings, home: this.paths.home };
   }
   snapshot(): Promise<Snapshot> { return this.exclusive((_check, pending) => this.snapshotUnlocked(pending), true); }
   // `config` carries the editor's text: its global part (everything the provider does not own) is written to the

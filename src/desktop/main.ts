@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, nativeTheme, net, shell } from 'electron';
 import { isAbsolute, join } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -43,7 +43,7 @@ else {
       });
     }
     const createWindow = () => {
-      window = new BrowserWindow({ width: 1140, height: 820, minWidth: 840, minHeight: 600, title: 'MiSwitch', backgroundColor: '#f6f7fb', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
+      window = new BrowserWindow({ width: 1140, height: 820, minWidth: 840, minHeight: 600, title: 'MiSwitch', backgroundColor: nativeTheme.shouldUseDarkColors ? '#141816' : '#f7f8f6', webPreferences: { preload: join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true } });
       // Only the vendor pages listed in the presets open, and only in the system browser.
       window.webContents.setWindowOpenHandler(({ url }) => { if (presetLinks.has(url)) void shell.openExternal(url); return { action: 'deny' }; });
       window.webContents.on('will-navigate', event => event.preventDefault());

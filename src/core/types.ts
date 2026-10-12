@@ -70,7 +70,7 @@ export type BackupInfo = { id: string; app: AppId; createdAt: string; sequence?:
 // A journal whose target files were changed by someone else. `valid` is false when pending.json itself cannot be parsed.
 export type PendingInfo = { id: string; app: AppId | null; createdAt: string | null; paths: string[]; conflicts: string[]; valid: boolean };
 // The renderer only needs which provider is active; the hashes stay in the main process.
-export type Snapshot = { providers: PublicProvider[]; active: Partial<Record<AppId, Pick<ActiveRecord, 'providerId' | 'appliedAt'>>>; diagnostics: Diagnosis[]; backups: BackupInfo[]; pending: PendingInfo | null; warnings: string[] };
+export type Snapshot = { providers: PublicProvider[]; active: Partial<Record<AppId, Pick<ActiveRecord, 'providerId' | 'appliedAt'>>>; diagnostics: Diagnosis[]; backups: BackupInfo[]; pending: PendingInfo | null; warnings: string[]; home: string };
 // Fetches the provider's model IDs. An empty apiKey with providerId uses that provider's saved key.
 export const modelListRequestSchema = z.object({
   app: appSchema, baseUrl: z.string().trim().max(2048), protocol: protocolSchema,

@@ -18,7 +18,7 @@ Electron 安装体积会大于 Tauri；若安装体积成为首要目标，可�
 
 ```mermaid
 flowchart LR
-    UI[React 卡片 / 弹窗 / 诊断] --> Bridge[Sandbox preload\n五个 IPC 方法]
+    UI[React 列表 / 编辑面板 / 诊断] --> Bridge[Sandbox preload\n五个 IPC 方法]
     Bridge --> Main[Electron 主进程\n来源校验 / 参数校验]
     Main --> Manager[Manager\nHub 锁 / 事务 / 恢复]
     Manager --> Hub[明文 hub.json]
@@ -42,9 +42,10 @@ src/
     main.ts        单实例、BrowserWindow、IPC 主进程
     preload.ts     限定 Bridge
   ui/
-    App.tsx        应用导航、卡片、编辑、备份与状态
+    App.tsx        应用导航、供应商列表、备份与状态
+    ProviderEditor.tsx  预设选择与编辑面板（含配置文件）
     main.tsx       React 入口
-    styles.css     现代卡片式界面
+    styles.css     设计 token、深浅色与布局
 tests/
   manager.test.ts 真实临时文件的核心回归测试
 scripts/
@@ -360,17 +361,18 @@ JSON/TOML 读取、备份失败都发生在目标覆写前。多文件写入中�
 
 ```text
 App
- ├─ 应用导航：Claude / ChatGPT / Pi
- ├─ 本地状态：是否发现文件、hash 变化、刷新
- ├─ ProviderCard[]：当前写入 / 文件变化 / 写入后已编辑 / 重新启用
+ ├─ 侧栏应用导航：每个应用当前写入的配置名与状态灯
+ ├─ 本地状态：状态灯、目标文件路径（家目录缩写为 ~）、刷新
+ ├─ ProviderRow[]：名称与备注、端点、模型、状态、启用 / 编辑 / 删除；当前写入的一行带信号色左栏
  ├─ ProviderEditor：新增时先选预设（搜索、分类、自定义）；名称、模式、URL、密钥（可显示）、协议、模型（可获取列表）、别名映射（Claude）、上下文与推理强度（Codex）、备注、配置文件（全局设置，与表单双向同步）
- ├─ Modal：编辑或删除 / 恢复确认
- └─ 历史备份：时间、文件、恢复动作
+ ├─ Modal：删除 / 恢复 / 放弃日志的确认；编辑器为右侧全高面板，标题与保存栏固定
+ ├─ 历史备份、诊断：可折叠
+ └─ 操作结果：底部提示，5 秒后消失，不推动版面
 ```
 
 `ProviderEditor` 使用原生 dialog，具有标题、焦点约束、Esc 关闭；字段使用 label。保存与启用期间禁用竞争动作。网络访问和文件访问均不在 React renderer 执行。API 字段在登录模式下保持挂载但 `hidden` + `disabled`，因此模式来回切换不会丢失未保存的 URL 与 Key；禁用的 fieldset 不参与校验与 FormData，登录模式保存时不会带上密钥。
 
-样式使用 `src/ui/styles.css` 的色彩 token；次要文字在白底、淡灰底与消息背景上的对比均不低于 4.5:1。所有用户文本（名称、备注、端点、备份文件名、错误信息）设置 `overflow-wrap: anywhere`，卡片网格最小列宽不超过容器；720 px 以下（含 840 px 最小窗口在 200% 缩放下的 420 px CSS 视口）侧栏改为顶部横排、header 换行、状态面板单列。
+视觉以“切换台”为主题：石墨灰的文字与线条，唯一的信号绿只用于“当前写入”（状态灯、左栏、标签），需要注意的状态用琥珀色。系统字体（SF Pro / 苹方）；端点、模型 ID、路径和配置文件用等宽字体，因为这些都是要原样复制的字面值。`src/ui/styles.css` 的 token 同时定义浅色与深色两套，跟随系统 `prefers-color-scheme`；两套中所有文字与其背景的对比都不低于 4.98:1。所有用户文本设置 `overflow-wrap: anywhere`。供应商列表在 1180 px 以上为单行六栏，以下为两行，720 px 以下（含 840 px 最小窗口在 200% 缩放下的 420 px CSS 视口）逐项竖排，侧栏改为顶部横排；状态标签与按钮栏使用固定宽度，使各行的端点与模型对齐。编辑面板与提示的进场动画在 `prefers-reduced-motion` 下关闭。
 
 Bridge 仅暴露：
 

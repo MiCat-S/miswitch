@@ -35,7 +35,7 @@ app.on('browser-window-created', (_event, window) => {
         document.querySelector('input[name=apiKey]').value = 'sk-smoke-only';
         document.querySelector('input[name=smallFastModel]').value = ' smoke-small ';
         document.querySelector('form').requestSubmit();
-        await until(() => !document.querySelector('dialog') && document.querySelector('.provider-card'));
+        await until(() => !document.querySelector('dialog') && document.querySelector('.provider-row'));
         document.querySelector('.card-actions button').click();
         await until(() => document.querySelector('.badge.green'));
         // Validation messages from the main process must reach the form (static Zod custom issues only).
@@ -96,7 +96,7 @@ app.on('browser-window-created', (_event, window) => {
         await until(() => document.querySelector('input[name=model]').value === 'smoke-from-text');
         document.querySelector('form').requestSubmit();
         await until(() => !document.querySelector('dialog'));
-        return { keyHidden: !shown.includes('sk-smoke-only') && shown.includes('已保存的密钥'), badge: document.querySelector('.provider-card .badge').textContent };
+        return { keyHidden: !shown.includes('sk-smoke-only') && shown.includes('已保存的密钥'), badge: document.querySelector('.provider-row .badge').textContent };
       })()`);
       assert.deepEqual(configEdit, { keyHidden: true, badge: '已编辑，待重新写入' });
       const afterEdit = JSON.parse(readFileSync(join(root, 'home', '.claude', 'settings.json'), 'utf8'));
@@ -107,11 +107,11 @@ app.on('browser-window-created', (_event, window) => {
         const s = await window.miswitch.snapshot(); const p = s.providers[0];
         await window.miswitch.save({ id: p.id, app: 'claude', name: 'A'.repeat(100), mode: 'api', baseUrl: 'https://example.test', model: 'model'.repeat(40), protocol: 'anthropic-messages', notes: 'X'.repeat(2000) });
         document.querySelector('.status-panel button').click();
-        for (let i = 0; i < 200; i++) { if (document.querySelector('.provider-card h2')?.textContent.length === 100 && !document.querySelector('header .primary').disabled) return document.querySelector('.provider-card .badge').textContent; await new Promise(r => requestAnimationFrame(r)); }
+        for (let i = 0; i < 200; i++) { if (document.querySelector('.provider-row h2')?.textContent.length === 100 && !document.querySelector('header .primary').disabled) return document.querySelector('.provider-row .badge').textContent; await new Promise(r => requestAnimationFrame(r)); }
         throw new Error('long text refresh timeout');
       })()`);
       assert.equal(editedBadge, '已编辑，待重新写入');
-      const measure = () => window.webContents.executeJavaScript(`({ viewport: innerWidth, page: document.documentElement.scrollWidth, card: document.querySelector('.provider-card').scrollWidth, cardBox: document.querySelector('.provider-card').clientWidth })`);
+      const measure = () => window.webContents.executeJavaScript(`({ viewport: innerWidth, page: document.documentElement.scrollWidth, card: document.querySelector('.provider-row').scrollWidth, cardBox: document.querySelector('.provider-row').clientWidth })`);
       window.setSize(840, 600); await new Promise(r => setTimeout(r, 250));
       const longText = await measure();
       assert.ok(longText.page <= longText.viewport && longText.card <= longText.cardBox, 'long text overflow: ' + JSON.stringify(longText));
