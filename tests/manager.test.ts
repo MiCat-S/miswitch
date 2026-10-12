@@ -261,6 +261,69 @@ test('a Hub with duplicate provider IDs is rejected', async () => {
     await assert.rejects(() => f.manager.snapshot(), /重复的配置 ID/);
   } finally { await f.cleanup(); }
 });
+test('the first import adopts each CLI configuration as its active provider without touching the files', async () => {
+  const f = await fixture();
+  try {
+    const [toml, codexAuth] = f.paths.targets.chatgpt; const [models, piAuth, piSettings] = f.paths.targets.pi;
+    const files: [string, string][] = [
+      [f.paths.targets.claude[0], '{"model":"opus","env":{"TZ":"Asia/Taipei"},"statusLine":{"type":"command"}}'],
+      // What cc-switch writes, with an official ChatGPT login kept in auth.json.
+      [toml, 'model_provider = "custom"\nmodel = "gateway-model"\nmodel_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n[model_providers.custom]\nname = "OpenAI"\nbase_url = "https://gateway.example/v1"\nwire_api = "responses"\nrequires_openai_auth = true\nexperimental_bearer_token = "sk-imported-codex"\n[mcp_servers.keep]\ncommand = "keep"\n'],
+      [codexAuth, '{"auth_mode":"chatgpt","OPENAI_API_KEY":null,"tokens":{"access_token":"fake-access"}}'],
+      // A provider the user defined in Pi itself, with overrides MiSwitch must not rewrite.
+      [models, '{"providers":{"mi":{"name":"opencode","baseUrl":"https://gateway.example/v1","api":"openai-responses","apiKey":"sk-imported-pi","models":[],"modelOverrides":{"pi-model":{"reasoning":true}}}}}'],
+      [piAuth, '{"mi":{"type":"api_key","key":"sk-imported-pi"}}'],
+      [piSettings, '{"defaultProvider":"mi","defaultModel":"pi-model","theme":"dark"}']
+    ];
+    for (const [path, text] of files) await f.put(path, text);
+    const s = await f.manager.importLive();
+    for (const [path, text] of files) assert.equal(await readText(path), text);
+    assert.deepEqual(s.warnings, []);
+    const byApp = (app: AppId) => s.providers.filter(p => p.app === app);
+    assert.deepEqual(byApp('claude').map(p => [p.name, p.mode, p.model]), [['Claude 官方登录', 'login', 'opus']]);
+    assert.deepEqual(byApp('chatgpt').map(p => [p.name, p.mode, p.baseUrl, p.model, p.contextWindow, p.autoCompactTokenLimit, p.hasKey]), [['OpenAI', 'api', 'https://gateway.example/v1', 'gateway-model', 1000000, 900000, true]]);
+    assert.deepEqual(byApp('pi').map(p => [p.name, p.mode, p.loginProvider, p.model]), [['opencode（mi）', 'login', 'mi', 'pi-model']]);
+    for (const d of s.diagnostics) {
+      assert.equal(s.active[d.app]?.providerId, byApp(d.app)[0].id); assert.equal(d.state, 'written'); assert.equal(d.edited, false); assert.equal(d.reformatted, false);
+    }
+    assert.ok(!JSON.stringify(s).includes('sk-imported'));
+    // Once per app: a second launch imports nothing, and writing the imported providers back keeps Pi's own entry.
+    assert.equal((await f.manager.importLive()).providers.length, 3);
+    for (const app of ['chatgpt', 'pi'] as AppId[]) await f.manager.activate(byApp(app)[0].id);
+    assert.deepEqual(JSON.parse((await readText(models))!), JSON.parse(files[3][1]));
+    assert.equal((TOML.parse((await readText(toml))!) as any).model_providers.custom.experimental_bearer_token, 'sk-imported-codex');
+  } finally { await f.cleanup(); }
+});
+test('configurations that cannot be represented are reported once and never imported half-way', async () => {
+  const f = await fixture();
+  try {
+    let s = await f.manager.importLive();
+    assert.deepEqual(s.providers, []); assert.deepEqual(s.warnings, []);
+    // Nothing was configured, so nothing was recorded: a configuration that appears later is still imported.
+    await f.put(f.paths.targets.claude[0], '{"env":{"ANTHROPIC_BASE_URL":"http://gateway.example","ANTHROPIC_AUTH_TOKEN":"sk-remote-http"}}');
+    await f.put(f.paths.targets.chatgpt[0], 'model = "m"\nmodel_provider = "env"\n[model_providers.env]\nbase_url = "https://gateway.example/v1"\nenv_key = "GATEWAY_KEY"\n');
+    s = await f.manager.importLive();
+    assert.deepEqual(s.providers, []);
+    assert.ok(s.warnings.some(w => w.startsWith('Claude Code 的本机配置未导入：Base URL 必须为 HTTPS')));
+    assert.ok(s.warnings.some(w => w.startsWith('Codex 的本机配置无法表示为配置项')));
+    assert.deepEqual((await f.manager.importLive()).warnings, []);
+    // The explicit import retries; a Claude login without a model uses the `default` alias and is not marked active.
+    await f.put(f.paths.targets.claude[0], '{"theme":"dark"}');
+    s = await f.manager.importLive('claude');
+    assert.deepEqual(s.providers.map(p => [p.mode, p.model]), [['login', 'default']]); assert.equal(s.active.claude, undefined);
+    assert.equal(await readText(f.paths.targets.claude[0]), '{"theme":"dark"}');
+    assert.match((await f.manager.importLive('pi')).warnings[0], /没有找到 Pi/);
+  } finally { await f.cleanup(); }
+});
+test('the import waits while a conflicting journal is pending', async () => {
+  const f = await fixture();
+  try {
+    const path = f.paths.targets.claude[0]; await f.put(path, '{"model":"opus"}');
+    await f.put(join(f.paths.data, 'pending.json'), JSON.stringify({ version: 1, id: randomUUID(), app: 'claude', createdAt: new Date().toISOString(), entries: [{ path, before: '{"a":1}', after: '{"b":2}' }] }));
+    const s = await f.manager.importLive();
+    assert.ok(s.pending); assert.deepEqual(s.providers, []);
+  } finally { await f.cleanup(); }
+});
 test('concurrent managers serialize Hub updates without dropping providers', async () => {
   const f = await fixture();
   try {

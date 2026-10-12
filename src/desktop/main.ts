@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { Manager } from '../core/manager';
 import { resolvePaths } from '../core/paths';
 import { publicError } from '../core/errors';
-import type { ProviderInput } from '../core/types';
+import type { AppId, ProviderInput } from '../core/types';
 
 // Development-only isolation for smoke tests. Packaged builds ignore this override.
 const sandboxRoot = !app.isPackaged && process.env.MISWITCH_SANDBOX_ROOT;
@@ -28,7 +28,8 @@ else {
     const handlers: Record<string, (payload: any) => Promise<unknown>> = {
       snapshot: () => manager.snapshot(), save: (p: ProviderInput) => manager.save(p),
       remove: (id: string) => manager.remove(id), activate: (id: string) => manager.activate(id),
-      restore: (id: string) => manager.restore(id), resolveJournal: (id: string) => manager.resolveJournal(id)
+      restore: (id: string) => manager.restore(id), resolveJournal: (id: string) => manager.resolveJournal(id),
+      importLive: (app?: AppId) => manager.importLive(app)
     };
     for (const [name, handler] of Object.entries(handlers)) {
       ipcMain.handle(`miswitch:${name}`, async (event, payload: unknown) => {

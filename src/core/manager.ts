@@ -2,8 +2,8 @@ import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { lstat, readdir, unlink } from 'node:fs/promises';
 import { z } from 'zod';
-import { patchProvider, claudeEnvKeys, jsonObject, asJson, managedFingerprint, providerDefinition, RULES } from './adapters';
-import { PENDING_MESSAGE, PublicError } from './errors';
+import { patchProvider, claudeEnvKeys, jsonObject, asJson, managedFingerprint, providerDefinition, liveProvider, RULES } from './adapters';
+import { PENDING_MESSAGE, PublicError, publicError } from './errors';
 import { ARCHIVE_LIMIT, TARGET_LIMIT, atomicWrite, byteLength, ensureDirectory, hash, readText, replaceText, syncDirectory, withLocks } from './files';
 import type { Paths } from './paths';
 import { appSchema, providerSchema, type AppId, type BackupInfo, type Hub, type PendingInfo, type Provider, type ProviderInput, type Snapshot } from './types';
@@ -22,6 +22,7 @@ const pendingId = z.string().regex(/^[a-f0-9-]{36}$|^[a-f0-9]{64}$|^unreadable$/
 const unreadable = Symbol('unreadable');
 const invalidArchive = Symbol('invalid-archive');
 const apps: AppId[] = ['claude', 'chatgpt', 'pi'];
+const labels: Record<AppId, string> = { claude: 'Claude Code', chatgpt: 'Codex', pi: 'Pi' };
 
 export class Manager {
   private hubPath: string;
@@ -49,6 +50,7 @@ export class Manager {
       uuid.parse(input.id); providerSchema.parse({ ...input, apiKey }); z.string().datetime().parse(updatedAt);
       if (apiKey !== undefined) z.string().parse(apiKey);
     }
+    if (hub.imported !== undefined) z.partialRecord(appSchema, z.string().datetime()).parse(hub.imported);
     if (new Set(hub.providers.map(p => p.id)).size !== hub.providers.length) throw new PublicError('Hub 包含重复的配置 ID；请先备份 hub.json，再手动删除或改正重复项');
     for (const [app, record] of Object.entries(hub.active)) {
       appSchema.parse(app);
@@ -328,6 +330,47 @@ export class Manager {
       });
       return this.snapshotUnlocked();
     });
+  }
+  // Adopts what each CLI is configured with now as the first provider of that app. Without `app` it runs once per
+  // app, for apps without providers; with `app` it is the explicit import from the empty list. Target files are only
+  // read. An import that writing back would leave every managed field unchanged is recorded as the active provider.
+  async importLive(app?: AppId): Promise<Snapshot> {
+    if (app !== undefined) appSchema.parse(app);
+    return this.exclusive(async (check, pending) => {
+      if (pending) return this.snapshotUnlocked(pending);
+      const before = await readText(this.hubPath);
+      const hub = await this.readHub();
+      const now = new Date().toISOString();
+      const notices: string[] = [];
+      let changed = false;
+      for (const target of app ? [app] : apps) {
+        if (!app && (hub.imported?.[target] || hub.providers.some(p => p.app === target))) continue;
+        const paths = this.paths.targets[target];
+        const originals = await Promise.all(paths.map(path => readText(path))).catch(() => null);
+        if (!originals) { notices.push(`${labels[target]} 的本机配置无法读取，未导入`); continue; }
+        if (originals.every(text => text === null)) { if (app) notices.push(`没有找到 ${labels[target]} 的本机配置`); continue; }
+        hub.imported = { ...hub.imported, [target]: now }; changed = true;
+        let input: ProviderInput | null;
+        try { input = liveProvider(target, originals); } catch { input = null; }
+        if (!input) { notices.push(`${labels[target]} 的本机配置无法表示为配置项（例如未设置模型或使用了环境变量密钥），未导入`); continue; }
+        const parsed = providerSchema.safeParse(input);
+        if (!parsed.success) { notices.push(`${labels[target]} 的本机配置未导入：${publicError(parsed.error)}`); continue; }
+        const { apiKey, ...rest } = parsed.data;
+        const provider: Provider = { ...rest, id: randomUUID(), apiKey: rest.mode === 'api' ? apiKey : undefined, updatedAt: now };
+        hub.providers.push(provider);
+        if (hub.active[target]) continue;
+        try {
+          const current = managedFingerprint(target, originals);
+          const after = patchProvider(provider, originals, provider.apiKey);
+          if (current !== null && managedFingerprint(target, after) === current) {
+            hub.active[target] = { providerId: provider.id, appliedAt: now, rules: RULES, fingerprint: hash(current), definition: hash(providerDefinition(provider)), hashes: Object.fromEntries(paths.map((path, i) => [path, hash(originals[i])])) };
+          }
+        } catch { /* Not representable as written (e.g. a Pi provider that no longer exists): imported but not active. */ }
+      }
+      if (changed) { check(); await atomicWrite(this.hubPath, asJson(hub), before); }
+      const snapshot = await this.snapshotUnlocked();
+      return { ...snapshot, warnings: [...notices, ...snapshot.warnings] };
+    }, true);
   }
   // Resolves a conflicting journal: files still holding our own bytes are rolled back, external edits are left untouched.
   // The id must match what the last snapshot reported so the user confirms the exact journal they inspected.

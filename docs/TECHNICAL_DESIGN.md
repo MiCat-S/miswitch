@@ -115,11 +115,12 @@ scripts/
 | `model` | 非空，最大 200 字符 | 用户提供精确模型 ID；不猜测“最新模型” |
 | `protocol` | 三种协议枚举 | Claude/Codex 再做应用级约束 |
 | `claudeAuth` | `api-key / bearer` | Anthropic 官方 API 与 Bearer 网关区分 |
-| `loginProvider` | Pi 登录模式使用 | `auth.json` 中已有 OAuth Provider ID |
+| `loginProvider` | Pi 登录模式使用 | Pi 中已有的 Provider ID：`auth.json` 中的条目（OAuth 或 API Key）或 `models.json` 中定义的 Provider |
 | `notes` | 最大 2000 字符 | 用户备注 |
 | `smallFastModel` | 可选，最大 200 字符，仅 Claude API 模式 | 写入 `ANTHROPIC_DEFAULT_HAIKU_MODEL`：haiku 别名与后台任务使用的模型 |
 | `contextWindow` / `autoCompactTokenLimit` | 可选正整数，仅 Codex | 写入 `model_context_window` / `model_auto_compact_token_limit` |
 | `updatedAt` / `appliedAt` | UTC ISO8601 | UI 按用户本地时区显示 |
+| `imported` | 应用 → UTC ISO8601，可选 | 各应用本机配置的自动导入时间；有记录的应用不再自动导入 |
 | `active.*.rules` | 正整数，可选 | 计算 `fingerprint` 与 `definition` 时使用的管理字段规则集；缺省为规则集 1（`722c119` 及之前） |
 | `active.*.fingerprint` | SHA-256 | 本工具管理字段的规范化 JSON 摘要；状态判定以此为准，CLI 自行重排文件不算漂移 |
 | `active.*.hashes` | 路径 → SHA-256 | 上次写入的精确字节；仅用于提示“文件已被重排” |
@@ -128,6 +129,16 @@ scripts/
 向前端返回 `PublicProvider` 时剔除 `apiKey`，只返回 `hasKey`；`active` 只返回 `providerId` 与 `appliedAt`，各种摘要留在主进程。编辑框留空保留旧密钥；已保存的密钥不会自动填回 renderer。编辑当前 Provider 不写目标文件，也不清除 `active` 记录：目标文件里仍是它写入的设置，所以它仍然不能删除，必须先切换到另一组。状态检测比较 `definition` 与当前 Provider，有差异时界面显示“已编辑，待重新写入”，改回原值后提示自动消失。`definition` 只投影该应用与模式下 Adapter 实际写入的字段：Claude 为模型，API 模式另加 Base URL、密钥、鉴权头与小型／快速模型；Codex 为模型与两个上下文键，API 模式另加名称、Base URL 与密钥；Pi 为模型，API 模式另加 Provider ID、Base URL、协议与密钥，登录模式另加登录 Provider ID。因此只改备注、名称（Codex API 模式除外）或当前模式不使用的字段都不算编辑。`37e2673` 写入的记录没有 `definition`，那时编辑会清除记录，所以现存记录对应的必然是未编辑的 Provider，第一次编辑时用编辑前的 Provider 按记录自己的规则集补写。
 
 **规则集。** 管理字段的范围可能随版本扩大（规则集 2 新增清理 fable 与旧 small/fast 路由，并改用上述投影）。每条 `active` 记录保存自己的 `rules`，状态检测与编辑判定都按该规则集计算，所以单纯升级不会把未改动的文件报成外部修改。旧规则集记录若在文件中仍有新规则集会清理的键，诊断提示“重新写入后按新规则清理”；重新启用后记录改用当前规则集。
+
+**首次导入。** `importLive()` 是 `patchProvider()` 的逆向：读取各应用当前目标文件，生成一组 Provider 输入，再走同一 Schema 校验。没有参数时，只对没有 Provider、且 Hub 中没有 `imported` 记录的应用执行，界面首次载入时调用；指定应用时由空列表的“从本机配置导入”按钮触发，忽略记录。只要找到目标文件就写入 `imported`，所以删除导入的配置后不会再自动导入；完全没有配置文件的应用不记录，之后出现配置仍会导入。目标文件只读不写。
+
+| 应用 | 导入规则 |
+| --- | --- |
+| Claude Code | `env` 有 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` 时为 API 模式（Base URL 缺省为官方地址，`AUTH_TOKEN` 对应 Bearer，haiku 或旧 small/fast 路由对应小型／快速模型）；否则为官方登录。模型取 `ANTHROPIC_MODEL` 或 `model`，都没有时用 Claude Code 的 `default` 别名。有 `apiKeyHelper` 或 Bedrock / Vertex / Foundry 开关时不导入 |
+| Codex | 有 `model_provider` 时，对应表须有字面 `base_url` 与 `experimental_bearer_token`，且 `wire_api` 为 Responses，名称取表的 `name`；没有 `model_provider` 时为官方登录。上下文键一并导入。未设置 `model`、使用 `env_key` 或其他协议时不导入 |
+| Pi | `settings.json` 的 `defaultProvider` 与 `defaultModel` 导入为“沿用已有 Provider”，名称取 `models.json` 中的 `name`；本工具自己的 `miswitch_*` 条目不导入 |
+
+导入结果先在内存中用 `patchProvider()` 写回一次：若管理字段指纹与当前文件相同，说明重新写入不会改变任何管理字段，直接记为当前 `active`（`hashes` 为当前原文）；否则只导入不标记。待决日志存在时不导入。
 
 **降级边界。** 旧版本的 Provider Schema 是 strict 的：保存过 `smallFastModel` 的 Hub 无法被 `722c119` 之前的版本打开（只读拒绝，不会覆写）。降级前先备份整个 store，再从 `hub.json` 删除该字段。`active.*.rules`、备份的 `info.sequence` 不影响旧版本读取。
 
@@ -286,7 +297,7 @@ Pi 的自定义 Provider ID 为 `miswitch_` + 去掉连字符的 UUID，避免�
 
 Base URL 约定按 Pi 各客户端行为而定：`anthropic-messages` 会在 Base URL 后追加 `/v1/messages`，所以填写不带 `/v1` 的地址；两种 OpenAI 协议使用 SDK 的 `/v1` 约定，需要带 `/v1`。`authHeader: true` 使 Pi 在 Anthropic 协议下同时发送 `x-api-key` 与 `Authorization: Bearer`，容器测试确认两者均带正确密钥，兼容只接受其中一种的网关。
 
-Pi 支持配置值表达式，包括环境插值和命令；本 UI 只收字面 API Key，拒绝会触发表达式的前缀。官方登录模式须指定已有 OAuth Provider ID，并验证对应条目的 `type === "oauth"`，然后只改默认模型与路由，保留登录原文。
+Pi 支持配置值表达式，包括环境插值和命令；本 UI 只收字面 API Key，拒绝会触发表达式的前缀。登录模式（界面称“沿用 Pi 已有的 Provider”）指定一个已存在的 Provider ID：`auth.json` 中有该条目（OAuth 或 Pi 自己保存的 API Key），或 `models.json` 中定义了它。切换时只写 `defaultProvider` 与 `defaultModel`，该 Provider 的定义、覆盖项和凭据原样保留。找不到时拒绝切换。
 
 Pi 的 `/model` 可重载模型配置，但启动默认值不等于已有会话立刻切换模型。恢复已有会话可能取回记录中的 Provider / Model。
 

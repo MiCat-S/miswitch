@@ -6,6 +6,7 @@ const bridge: Bridge = {
   remove: id => ipcRenderer.invoke('miswitch:remove', id),
   activate: id => ipcRenderer.invoke('miswitch:activate', id),
   restore: id => ipcRenderer.invoke('miswitch:restore', id),
-  resolveJournal: id => ipcRenderer.invoke('miswitch:resolveJournal', id)
+  resolveJournal: id => ipcRenderer.invoke('miswitch:resolveJournal', id),
+  importLive: app => ipcRenderer.invoke('miswitch:importLive', app)
 };
 contextBridge.exposeInMainWorld('miswitch', bridge);

@@ -41,7 +41,7 @@ Claude Code 使用 Anthropic Messages；Codex 使用 Responses；Pi 可选择 An
 
 Claude Code 的后台任务和 haiku 别名默认请求 Anthropic 的 Haiku 模型 ID；网关没有该模型时，在配置里填写“小型／快速模型”（写入 `ANTHROPIC_DEFAULT_HAIKU_MODEL`）。
 
-“官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Pi 会检查指定 Provider 已有 OAuth 记录。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
+“官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Pi 的对应模式是“沿用 Pi 已有的 Provider”：只切换 `defaultProvider` 与 `defaultModel`，不改动该 Provider 本身（`/login` 保存的登录、`auth.json` 中的密钥或 `models.json` 中的定义）。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
 
 Codex 的写法与 cc-switch 相同：第三方路由写在 `model_providers.custom` 并以 `experimental_bearer_token` 保存密钥，官方路由移除 `model_provider`；两个工具可以接管同一份配置。
 
@@ -54,5 +54,7 @@ Codex 的写法与 cc-switch 相同：第三方路由写在 `model_providers.cus
 - [桌面实际运行截图](docs/desktop-preview.png)
 
 切换成功表示文件已写入并完成校验；新进程启动、项目配置、已有会话模型和管理员策略仍影响实际使用。请在目标工具内确认供应商与模型。
+
+首次打开时，每个应用会把本机当前配置导入为第一组配置（各一次；删除后不再自动导入，列表为空时可点“从本机配置导入”）。导入只读取目标文件；若重新写入不会改变任何管理字段，导入的配置直接标记为“当前写入”。无法表示的配置（例如 Codex 使用 `env_key` 读取终端环境变量的密钥、Claude 使用 `apiKeyHelper` 或云平台路由）不导入，界面会提示原因。
 
 状态判定只比较本工具管理的字段：CLI 自行重排或追加无关设置仍显示“配置已写入”，改动了端点、密钥或模型才显示“管理字段已被外部修改”。编辑当前已写入的配置不会改动目标文件，卡片显示“已编辑，待重新写入”，点击“重新写入”后生效；只改备注不算编辑。若上次切换中断且目标文件随后被其他程序修改，界面会列出冲突文件并暂停所有写入；“放弃日志”只回退本工具自己写入的内容，外部修改一律保留，切换前的备份仍可恢复。

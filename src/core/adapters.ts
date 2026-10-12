@@ -1,6 +1,6 @@
 import TOML from '@iarna/toml';
 import { PublicError } from './errors';
-import type { AppId, Provider } from './types';
+import type { AppId, Provider, ProviderInput } from './types';
 
 export function jsonObject(text: string | null): Record<string, any> {
   const obj = text === null ? {} : JSON.parse(text.replace(/^﻿/, ''));
@@ -115,7 +115,8 @@ export function patchProvider(p: Provider, originals: (string | null)[], key?: s
   for (const id of Object.keys(auth)) if (managedPattern.test(id)) delete auth[id];
   const id = p.mode === 'login' ? p.loginProvider : managedId(p);
   if (p.mode === 'login') {
-    if (auth[id]?.type !== 'oauth') throw new PublicError('Pi 该 Provider 没有已保存的 OAuth 登录；请先运行 pi 的 /login');
+    // An existing provider: an OAuth login, an API key Pi saved itself, or one defined in models.json. It is used as-is.
+    if (!isObject(auth[id]) && !isObject(providers[id])) throw new PublicError('Pi 中找不到该 Provider；请先运行 pi 的 /login，或在 models.json 中定义它');
   } else {
     providers[id] = { baseUrl: p.baseUrl, api: p.protocol, apiKey: piApiKeyPlaceholder, authHeader: true, models: [{ id: p.model }] };
     auth[id] = { type: 'api_key', key };
@@ -123,6 +124,49 @@ export function patchProvider(p: Provider, originals: (string | null)[], key?: s
   settings.defaultProvider = id;
   settings.defaultModel = p.model;
   return [asJson(models), asJson(auth), asJson(settings)];
+}
+
+// The inverse of patchProvider(): what a CLI is configured with now, as provider input for the first import.
+// Returns null when the configuration is not one this tool can represent; the caller validates the result.
+export function liveProvider(app: AppId, originals: (string | null)[]): ProviderInput | null {
+  const text = (v: unknown) => typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  const count = (v: unknown) => typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : undefined;
+  const host = (url: string) => { try { return new URL(url).host; } catch { return url; } };
+  const notes = '首次运行时从本机配置导入';
+  if (app === 'claude') {
+    const settings = jsonObject(originals[0]);
+    const env = isObject(settings.env) ? settings.env : {};
+    // Dynamic keys and cloud platform routes have no provider equivalent; writing one would remove them.
+    if (settings.apiKeyHelper !== undefined || ['CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY'].some(k => env[k])) return null;
+    // `default` is Claude Code's alias for its recommended model; it stands in when no model is set.
+    const model = text(env.ANTHROPIC_MODEL) ?? text(settings.model) ?? 'default';
+    const key = text(env.ANTHROPIC_AUTH_TOKEN) ?? text(env.ANTHROPIC_API_KEY);
+    if (!key) return { app, name: 'Claude 官方登录', mode: 'login', model, protocol: 'anthropic-messages', notes };
+    const baseUrl = text(env.ANTHROPIC_BASE_URL) ?? 'https://api.anthropic.com';
+    return { app, name: host(baseUrl), mode: 'api', baseUrl, apiKey: key, claudeAuth: text(env.ANTHROPIC_AUTH_TOKEN) ? 'bearer' : 'api-key', model,
+      smallFastModel: text(env.ANTHROPIC_DEFAULT_HAIKU_MODEL) ?? text(env.ANTHROPIC_SMALL_FAST_MODEL), protocol: 'anthropic-messages', notes };
+  }
+  if (app === 'chatgpt') {
+    const config = TOML.parse(originals[0] ?? '') as Record<string, any>;
+    const model = text(config.model);
+    if (!model) return null;
+    const context = { contextWindow: count(config.model_context_window), autoCompactTokenLimit: count(config.model_auto_compact_token_limit) };
+    const route = text(config.model_provider);
+    if (!route) return { app, name: 'ChatGPT 官方登录', mode: 'login', model, protocol: 'openai-responses', notes, ...context };
+    // Only a route with a literal base URL and bearer token over Responses is representable (env_key needs the terminal's env).
+    const table = isObject(config.model_providers) && isObject(config.model_providers[route]) ? config.model_providers[route] : {};
+    const baseUrl = text(table.base_url); const token = text(table.experimental_bearer_token);
+    if (!baseUrl || !token || (table.wire_api !== undefined && table.wire_api !== 'responses')) return null;
+    return { app, name: text(table.name) ?? route, mode: 'api', baseUrl, apiKey: token, model, protocol: 'openai-responses', notes, ...context };
+  }
+  const models = jsonObject(originals[0]);
+  const settings = jsonObject(originals[2]);
+  const id = text(settings.defaultProvider); const model = text(settings.defaultModel);
+  if (!id || !model || managedPattern.test(id)) return null;
+  // Pi's own provider entry (models.json overrides, auth.json key or login) stays untouched; only the selection is managed.
+  const custom = isObject(models.providers) && isObject(models.providers[id]) ? models.providers[id] : {};
+  const protocol = ['anthropic-messages', 'openai-responses', 'openai-completions'].includes(custom.api) ? custom.api : 'openai-completions';
+  return { app, name: text(custom.name) ? `${custom.name}（${id}）` : id, mode: 'login', loginProvider: id, model, protocol, notes };
 }
 
 // Canonical JSON with sorted object keys: CLI rewrites that only reorder or reformat do not count as drift.
@@ -157,7 +201,7 @@ export function managedFingerprint(app: AppId, originals: (string | null)[], rul
     const auth = jsonObject(originals[1]);
     const settings = jsonObject(originals[2]);
     const defaultProvider = settings.defaultProvider;
-    // For login mode the relevant state is whether the official OAuth entry still exists.
+    // For an existing provider the relevant state is which kind of auth.json entry it has, if any.
     const loginType = typeof defaultProvider === 'string' && !managedPattern.test(defaultProvider) && isObject(auth[defaultProvider]) ? auth[defaultProvider].type : undefined;
     return canonical({ defaultProvider, defaultModel: settings.defaultModel, providers: managedEntries(models.providers), auth: managedEntries(auth), loginType });
   } catch { return null; }
