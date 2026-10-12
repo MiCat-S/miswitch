@@ -46,7 +46,9 @@ export type Hub = { version: 1; providers: Provider[]; active: Partial<Record<Ap
 // written: managed fields still equal the last write. reformatted: bytes differ but managed fields do not.
 // edited: the active provider was edited after it was written, so the target still holds the old settings.
 export type Diagnosis = { app: AppId; paths: string[]; initialized: boolean; state: 'none' | 'written' | 'drift'; reformatted: boolean; edited: boolean; warnings: string[] };
-export type BackupInfo = { id: string; app: AppId; createdAt: string; files: string[] };
+// `sequence` orders backups across all apps; createdAt only has millisecond resolution and follows the clock.
+// Backups written before it existed have none and sort as the oldest.
+export type BackupInfo = { id: string; app: AppId; createdAt: string; sequence?: number; files: string[] };
 // A journal whose target files were changed by someone else. `valid` is false when pending.json itself cannot be parsed.
 export type PendingInfo = { id: string; app: AppId | null; createdAt: string | null; paths: string[]; conflicts: string[]; valid: boolean };
 export type Snapshot = { providers: PublicProvider[]; active: Hub['active']; diagnostics: Diagnosis[]; backups: BackupInfo[]; pending: PendingInfo | null; warnings: string[] };

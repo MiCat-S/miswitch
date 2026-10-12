@@ -14,6 +14,8 @@ type Backup = { version: 1; info: BackupInfo; entries: Entry[] };
 // What listing a backup yields. `digest` covers what a restore would write: each target's path and before text.
 type BackupMeta = { info: BackupInfo; digest: string };
 const backupDigest = (entries: Entry[]) => hash(JSON.stringify([...entries].sort((a, b) => a.path < b.path ? -1 : 1).map(e => [e.path, e.before])));
+// Newest first. The sequence decides; the timestamp only orders backups written before sequences existed.
+const newestFirst = (a: BackupMeta, b: BackupMeta) => (b.info.sequence ?? 0) - (a.info.sequence ?? 0) || b.info.createdAt.localeCompare(a.info.createdAt) || b.info.id.localeCompare(a.info.id);
 const uuid = z.string().uuid();
 // A pending id is the journal UUID, or the SHA-256 of pending.json when the file cannot be parsed.
 const pendingId = z.string().regex(/^[a-f0-9-]{36}$|^[a-f0-9]{64}$|^unreadable$/);
@@ -25,9 +27,11 @@ export class Manager {
   private hubPath: string;
   private journalPath: string;
   private backupDir: string;
-  // Listing parses each backup file once per version (device, inode, size, mtime, ctime); restore re-reads the chosen file.
+  // Listing parses each backup file once per version (device, inode, size, mtime, ctime). Only metadata read from
+  // that same version is cached; skipping a backup and restoring one both re-read the file itself.
   private backupCache = new Map<string, { version: string; meta: BackupMeta | null }>();
-  constructor(private paths: Paths, private env: NodeJS.ProcessEnv = process.env, private retention = 10, private write: typeof replaceText = replaceText) {
+  // `write` replaces target files and `read` loads backups and the journal; tests substitute both to inject failures and observe I/O.
+  constructor(private paths: Paths, private env: NodeJS.ProcessEnv = process.env, private retention = 10, private write: typeof replaceText = replaceText, private read: typeof readText = readText) {
     this.hubPath = join(paths.data, 'hub.json');
     this.journalPath = join(paths.data, 'pending.json');
     this.backupDir = join(paths.data, 'backups');
@@ -72,7 +76,7 @@ export class Manager {
     if (same(names, full) || (Manager.legacySets[app] ?? []).some(set => same(names, [...set].sort()))) return;
     throw new PublicError('备份文件集合不完整');
   }
-  private readArchive(path: string): Promise<string | null> { return readText(path, ARCHIVE_LIMIT); }
+  private readArchive(path: string): Promise<string | null> { return this.read(path, ARCHIVE_LIMIT); }
   private parseJournal(raw: string): Journal {
     const j = z.object({ version: z.literal(1), id: uuid, app: appSchema, createdAt: z.string().datetime(), entries: z.unknown() }).parse(this.decode(raw));
     return { ...j, entries: this.validateEntries(j.entries, true) };
@@ -120,22 +124,22 @@ export class Manager {
   private async transaction(app: AppId, entries: Entry[], check: () => void): Promise<void> {
     const journal: Journal = { version: 1, id: randomUUID(), app, createdAt: new Date().toISOString(), entries };
     const targets = entries.filter(e => e.path !== this.hubPath);
-    const info: BackupInfo = { id: journal.id, app, createdAt: journal.createdAt, files: targets.map(e => basename(e.path)) };
+    const { list } = await this.backups();
+    const sequence = Math.max(0, ...list.map(b => b.info.sequence ?? 0)) + 1;
+    const info: BackupInfo = { id: journal.id, app, createdAt: journal.createdAt, sequence, files: targets.map(e => basename(e.path)) };
     const backup: Backup = { version: 1, info, entries: targets };
     // Every output is bounded before anything is written, so the verify, rollback and recovery reads cannot fail on size.
     if (entries.some(e => byteLength(e.after) > TARGET_LIMIT)) throw new PublicError('切换后的配置超过 8 MiB 限制；已停止，未修改任何文件');
     const encodedBackup = this.encode(backup);
     const encodedJournal = this.encode(journal);
     if (byteLength(encodedBackup) > ARCHIVE_LIMIT || byteLength(encodedJournal) > ARCHIVE_LIMIT) throw new PublicError('备份或恢复日志超过 128 MiB 限制；已停止，未修改任何文件');
-    // Re-activating the same configuration would back up the same before texts again and push distinct
-    // history out of the retention window. The newest backup of this app already restores that state.
+    // Re-activating the same configuration would back up the same before texts again and push distinct history
+    // out of the retention window. A newest backup with the same digest is only a candidate: it is read again,
+    // so a file changed or damaged since it was listed never stands in for the backup this switch needs.
     const digest = backupDigest(targets);
-    if ((await this.backups()).list.find(b => b.info.app === app)?.digest !== digest) {
-      const name = `${journal.id}.json`;
-      await atomicWrite(join(this.backupDir, name), encodedBackup, null);
-      const version = await this.fileVersion(join(this.backupDir, name)).catch(() => null);
-      if (version !== null) this.backupCache.set(name, { version, meta: { info, digest } });
-    }
+    const newest = list.find(b => b.info.app === app);
+    const covered = newest?.digest === digest && await this.readBackup(`${newest.info.id}.json`).then(b => backupDigest(b.entries) === digest, () => false);
+    if (!covered) await atomicWrite(join(this.backupDir, `${journal.id}.json`), encodedBackup, null);
     await atomicWrite(this.journalPath, encodedJournal, null);
     try {
       // Unchanged entries (e.g. Codex auth.json) stay locked, backed up and verified but are not rewritten.
@@ -159,7 +163,7 @@ export class Manager {
       throw error;
     }
     // Retention is housekeeping after commit; it cannot turn a successful switch into a failure.
-    await this.prune().catch(() => undefined);
+    await this.prune(covered ? undefined : journal.id).catch(() => undefined);
   }
   private async fileVersion(path: string): Promise<string> {
     const s = await lstat(path, { bigint: true });
@@ -168,7 +172,7 @@ export class Manager {
   private async readBackup(name: string): Promise<Backup> {
     const raw = await this.readArchive(join(this.backupDir, name));
     if (!raw) throw new Error('empty');
-    const b = z.object({ version: z.literal(1), info: z.object({ id: uuid, app: appSchema, createdAt: z.string().datetime(), files: z.array(z.string()) }), entries: z.unknown() }).parse(this.decode(raw));
+    const b = z.object({ version: z.literal(1), info: z.object({ id: uuid, app: appSchema, createdAt: z.string().datetime(), sequence: z.number().int().positive().optional(), files: z.array(z.string()) }), entries: z.unknown() }).parse(this.decode(raw));
     if (`${b.info.id}.json` !== name) throw new Error('id mismatch');
     const entries = this.validateEntries(b.entries, false);
     this.validateBackupSet(b.info.app, entries);
@@ -183,22 +187,26 @@ export class Manager {
     const list: BackupMeta[] = [];
     const skipped: string[] = [];
     for (const name of names) {
-      // The version is taken before reading, so a file replaced mid-read is parsed again next time.
-      const version = await this.fileVersion(join(this.backupDir, name)).catch(() => null);
+      const path = join(this.backupDir, name);
+      const version = await this.fileVersion(path).catch(() => null);
       const cached = this.backupCache.get(name);
       let meta = version !== null && cached?.version === version ? cached.meta : undefined;
       if (meta === undefined) {
         meta = await this.readBackup(name).then(b => ({ info: b.info, digest: backupDigest(b.entries) }), () => null);
-        if (version !== null) this.backupCache.set(name, { version, meta });
+        // Cached only when the file kept one version across the read, so the metadata belongs to that version.
+        if (version !== null && version === await this.fileVersion(path).catch(() => null)) this.backupCache.set(name, { version, meta });
+        else this.backupCache.delete(name);
       }
       if (meta) list.push(meta); else skipped.push(name);
     }
-    return { list: list.sort((a, b) => b.info.createdAt.localeCompare(a.info.createdAt)), skipped: skipped.sort() };
+    return { list: list.sort(newestFirst), skipped: skipped.sort() };
   }
-  private async prune(): Promise<void> {
+  // `keep` is the backup the current transaction wrote; it is never a deletion candidate.
+  private async prune(keep?: string): Promise<void> {
     const { list } = await this.backups();
     for (const app of apps) {
-      for (const b of list.filter(b => b.info.app === app).slice(this.retention)) {
+      const own = list.filter(b => b.info.app === app);
+      for (const b of [...own.filter(b => b.info.id === keep), ...own.filter(b => b.info.id !== keep)].slice(this.retention)) {
         await unlink(join(this.backupDir, `${b.info.id}.json`)); this.backupCache.delete(`${b.info.id}.json`);
       }
     }

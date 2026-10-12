@@ -13,10 +13,10 @@ import { atomicWrite, hash, readText, replaceText, withLocks } from '../src/core
 import { providerSchema, type AppId, type ProviderInput } from '../src/core/types';
 import { INVALID_INPUT_MESSAGE, PublicError, publicError } from '../src/core/errors';
 
-async function fixture(retention = 10, write = replaceText) {
+async function fixture(retention = 10, write = replaceText, read = readText) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'miswitch-test-')));
   const paths = resolvePaths(join(root, 'data'), join(root, 'home'), {});
-  const manager = new Manager(paths, {}, retention, write);
+  const manager = new Manager(paths, {}, retention, write, read);
   const cleanup = () => rm(root, { recursive: true, force: true });
   const put = async (path: string, value: string) => { await mkdir(dirname(path), { recursive: true }); await writeFile(path, value); };
   return { root, paths, manager, cleanup, put };
@@ -253,28 +253,89 @@ test('re-activating the same configuration does not add a backup identical to th
     assert.equal(JSON.parse((await readText(f.paths.targets.claude[0]))!).model, 'other-model');
   } finally { await f.cleanup(); }
 });
-test('listing backups parses each file once; restore reads only the chosen file', async () => {
+test('listing reads each backup version once and re-reads only changed files; restore reads only the chosen file', async () => {
   const f = await fixture();
   try {
-    const p = await add(f.manager); const other = await add(f.manager, input('claude', 'Other'));
-    await f.manager.activate(p.id); const s = await f.manager.activate(other.id);
+    const p = await add(f.manager); const q = await add(f.manager, { ...input('claude', 'Q'), model: 'other-model' });
+    await f.manager.activate(p.id); await f.manager.activate(q.id); const s = await f.manager.activate(p.id);
+    const dir = join(f.paths.data, 'backups'); const file = (id: string) => join(dir, `${id}.json`);
     const reads: string[] = [];
-    const manager = f.manager as any; const original = manager.readArchive.bind(manager);
-    manager.readArchive = (path: string) => { reads.push(path); return original(path); };
-    await f.manager.snapshot(); await f.manager.snapshot();
-    assert.deepEqual(reads.filter(r => r.includes('backups')), []);
-    await f.manager.restore(s.backups[1].id);
-    assert.deepEqual(reads.filter(r => r.includes('backups')), [join(f.paths.data, 'backups', `${s.backups[1].id}.json`)]);
+    const cold = new Manager(f.paths, {}, 10, replaceText, (path, limit) => { reads.push(path); return readText(path, limit); });
+    const backupReads = () => { const r = reads.filter(path => dirname(path) === dir).sort(); reads.length = 0; return r; };
+    await cold.snapshot();
+    assert.deepEqual(backupReads(), s.backups.map(b => file(b.id)).sort());
+    await cold.snapshot();
+    assert.deepEqual(backupReads(), []);
+    // Same content, compact formatting: a new version of one file.
+    const changed = file(s.backups[2].id);
+    await writeFile(changed, JSON.stringify(JSON.parse(await readFile(changed, 'utf8'))));
+    assert.equal((await cold.snapshot()).backups.length, 3);
+    assert.deepEqual(backupReads(), [changed]);
+    const restored = await cold.restore(s.backups[1].id);
+    // The chosen file, plus the backup this restore wrote, listed once afterwards.
+    assert.deepEqual(backupReads(), [file(s.backups[1].id), file(restored.backups[0].id)].sort());
   } finally { await f.cleanup(); }
 });
-test('backup retention is per app', async () => {
+test('a backup that changes while it is read is not cached', async () => {
+  const f = await fixture();
+  try {
+    const p = await add(f.manager); const s = await f.manager.activate(p.id);
+    const target = join(f.paths.data, 'backups', `${s.backups[0].id}.json`);
+    let reads = 0;
+    const manager = new Manager(f.paths, {}, 10, replaceText, async (path, limit) => {
+      if (path === target && ++reads === 1) await writeFile(target, '{"damaged by a concurrent writer":true}');
+      return readText(path, limit);
+    });
+    assert.equal((await manager.snapshot()).backups.length, 0);
+    await manager.snapshot(); await manager.snapshot();
+    // Read once while it changed, once more for the stable version, then cached.
+    assert.equal(reads, 2);
+  } finally { await f.cleanup(); }
+});
+test('skipping a backup re-reads the candidate; one that no longer matches its listing is replaced', async () => {
+  const f = await fixture();
+  try {
+    const p = await add(f.manager); await f.manager.activate(p.id); const s = await f.manager.activate(p.id);
+    const candidate = join(f.paths.data, 'backups', `${s.backups[0].id}.json`);
+    let reads = 0;
+    // The first read lists the candidate as it was; later reads see it damaged, as a stale cache entry would hide.
+    const manager = new Manager(f.paths, {}, 10, replaceText, async (path, limit) => path === candidate && ++reads > 1 ? '{broken' : readText(path, limit));
+    assert.equal((await manager.snapshot()).backups.length, 2);
+    const next = await manager.activate(p.id);
+    assert.equal(reads, 2); assert.equal(next.backups.length, 3);
+    const written = JSON.parse(await readFile(join(f.paths.data, 'backups', `${next.backups[0].id}.json`), 'utf8'));
+    assert.equal(written.entries[0].before, await readText(f.paths.targets.claude[0]));
+  } finally { await f.cleanup(); }
+});
+test('backup order follows the sequence, not the clock; the backup a switch writes is never pruned', async () => {
   const f = await fixture(2);
   try {
-    const p = await add(f.manager); const pi = await add(f.manager, input('pi', 'Pi'));
+    const path = f.paths.targets.claude[0];
+    const original = '{"model":"before-switch"}\n'; await f.put(path, original);
+    // Earlier backups stamped by a clock that later moved back, one of them without a sequence.
+    const old = (id: string, sequence: number | undefined, createdAt: string) => f.put(join(f.paths.data, 'backups', `${id}.json`), JSON.stringify({ version: 1, info: { id, app: 'claude', createdAt, ...(sequence ? { sequence } : {}), files: ['settings.json'] }, entries: [{ path, before: `{"seq":${sequence ?? 0}}`, after: null }] }));
+    await old('00000000-0000-4000-8000-000000000005', 5, '2099-01-01T00:00:00.000Z');
+    await old('00000000-0000-4000-8000-000000000006', 6, '2099-01-01T00:00:00.000Z');
+    await old('00000000-0000-4000-8000-000000000009', undefined, '2100-01-01T00:00:00.000Z');
+    const p = await add(f.manager); const s = await f.manager.activate(p.id);
+    assert.deepEqual(s.backups.map(b => [b.sequence, b.createdAt.startsWith('2099')]), [[7, false], [6, true]]);
+    const kept = JSON.parse(await readFile(join(f.paths.data, 'backups', `${s.backups[0].id}.json`), 'utf8'));
+    assert.equal(kept.entries[0].before, original);
+  } finally { await f.cleanup(); }
+});
+test('backup retention is per app and keeps the newest distinct states', async () => {
+  const f = await fixture(2);
+  try {
+    const p = await add(f.manager); const q = await add(f.manager, { ...input('claude', 'Q'), model: 'other-model' });
+    const pi = await add(f.manager, input('pi', 'Pi'));
     await f.manager.activate(pi.id);
-    for (let i = 0; i < 4; i++) await f.manager.activate(p.id);
+    // Alternating gives every switch a new before state: missing, p, q, p, q.
+    for (let i = 0; i < 5; i++) await f.manager.activate((i % 2 ? q : p).id);
     const s = await f.manager.snapshot();
-    assert.equal(s.backups.filter(b => b.app === 'claude').length, 2); assert.equal(s.backups.filter(b => b.app === 'pi').length, 1);
+    const claude = s.backups.filter(b => b.app === 'claude');
+    assert.equal(claude.length, 2); assert.equal(s.backups.filter(b => b.app === 'pi').length, 1);
+    const befores = await Promise.all(claude.map(async b => JSON.parse(JSON.parse(await readFile(join(f.paths.data, 'backups', `${b.id}.json`), 'utf8')).entries[0].before).model));
+    assert.deepEqual(befores, ['other-model', 'test-model']);
   } finally { await f.cleanup(); }
 });
 test('second-file failure rolls Pi and Hub back, with no success indicator', async () => {
