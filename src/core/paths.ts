@@ -3,6 +3,11 @@ import { isAbsolute, join, normalize } from 'node:path';
 import type { AppId } from './types';
 import { PublicError } from './errors';
 
+// The data folder earlier versions used: packaged builds `MiSwitch`, development builds the package name `miswitch`.
+// On a case-sensitive volume they differ; the one that already holds a Hub wins, `MiSwitch` first. Nothing is moved.
+export function dataFolder(appData: string, hasHub: (path: string) => boolean): string {
+  return join(appData, ['MiSwitch', 'miswitch'].find(name => hasHub(join(appData, name, 'store', 'hub.json'))) ?? 'MiSwitch');
+}
 export type Paths = { data: string; targets: Record<AppId, string[]>; home: string };
 // Only the main process constructs these paths; IPC never accepts a filesystem path.
 export function resolvePaths(data: string, home = homedir(), env = process.env): Paths {

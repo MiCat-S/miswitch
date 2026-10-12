@@ -124,7 +124,7 @@ export function patchProvider(p: Provider, originals: (string | null)[], key?: s
   const id = p.mode === 'login' ? p.loginProvider : managedId(p);
   if (p.mode === 'login') {
     // An existing provider: an OAuth login, an API key Pi saved itself, or one defined in models.json. It is used as-is.
-    if (!isObject(auth[id]) && !isObject(providers[id])) throw new PublicError('Pi 中找不到该 Provider；请先运行 pi 的 /login，或在 models.json 中定义它');
+    if (!(Object.hasOwn(auth, id) && isObject(auth[id])) && !(Object.hasOwn(providers, id) && isObject(providers[id]))) throw new PublicError('Pi 中找不到该 Provider；请先运行 pi 的 /login，或在 models.json 中定义它');
   } else {
     providers[id] = { baseUrl: p.baseUrl, api: p.protocol, apiKey: piApiKeyPlaceholder, authHeader: true, models: [{ id: p.model }] };
     auth[id] = { type: 'api_key', key };
@@ -173,16 +173,19 @@ export function liveProvider(app: AppId, originals: (string | null)[]): Provider
   const id = text(settings.defaultProvider); const model = text(settings.defaultModel);
   if (!id || !model || managedPattern.test(id)) return null;
   // Pi's own provider entry (models.json overrides, auth.json key or login) stays untouched; only the selection is managed.
-  const custom = isObject(models.providers) && isObject(models.providers[id]) ? models.providers[id] : {};
+  const custom = isObject(models.providers) && Object.hasOwn(models.providers, id) && isObject(models.providers[id]) ? models.providers[id] : {};
   const protocol = ['anthropic-messages', 'openai-responses', 'openai-completions'].includes(custom.api) ? custom.api : 'openai-completions';
   return { app, name: text(custom.name) ? `${custom.name}（${id}）` : id, mode: 'login', loginProvider: id, model, protocol, notes };
 }
 
 // Canonical JSON with sorted object keys: CLI rewrites that only reorder or reformat do not count as drift.
 export function canonical(value: unknown): string {
-  return JSON.stringify(value, (_key, v) => isObject(v) && !(v instanceof Date)
-    ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]]))
-    : v) ?? 'null';
+  // The replacer sees a Date only through its holder: JSON.stringify has already turned `v` into a string.
+  return JSON.stringify(value, function (this: any, key, v) {
+    const raw = key === '' ? value : this[key];
+    if (raw instanceof Date) return { '\u0000date': raw.toISOString() };
+    return isObject(v) ? Object.fromEntries(Object.keys(v).sort().map(k => [k, v[k]])) : v;
+  }) ?? 'null';
 }
 const pick = (obj: Record<string, any>, keys: string[]) => Object.fromEntries(keys.filter(k => k in obj).map(k => [k, obj[k]]));
 const managedEntries = (obj: unknown) => isObject(obj) ? pick(obj, Object.keys(obj).filter(id => managedPattern.test(id))) : {};

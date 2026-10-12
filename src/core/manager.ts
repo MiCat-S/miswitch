@@ -7,7 +7,7 @@ import { PENDING_MESSAGE, PublicError, SAVED_NOT_APPLIED, publicError } from './
 import { ARCHIVE_LIMIT, TARGET_LIMIT, atomicWrite, byteLength, ensureDirectory, hash, readText, replaceText, syncDirectory, withLocks } from './files';
 import type { Paths } from './paths';
 import { fetchModelList } from './models';
-import { composeConfig, editorFile, joinConfig, parseConfigText, serializeConfig, splitConfig } from './config-editor';
+import { SAVED_KEY_TEXT, composeConfig, editorFile, joinConfig, maskSecrets, parseConfigText, restoreSecrets, serializeConfig, splitConfig } from './config-editor';
 import { appSchema, configViewRequestSchema, globalEditSchema, modelListRequestSchema, providerSchema, type AppId, type ConfigView, type ConfigViewRequest, type GlobalEdit, type ModelList, type ModelListRequest, type BackupInfo, type Hub, type PendingInfo, type Provider, type ProviderInput, type Snapshot } from './types';
 
 type Entry = { path: string; before: string | null; after: string | null };
@@ -15,6 +15,8 @@ type Journal = { version: 1; id: string; app: AppId; createdAt: string; entries:
 type Backup = { version: 1; info: BackupInfo; entries: Entry[] };
 // What listing a backup yields. `digest` covers what a restore would write: each target's path and before text.
 type BackupMeta = { info: BackupInfo; digest: string };
+// A Base URL as the key is bound to: scheme, host, port and path, without a trailing slash. Unparseable stays as is.
+const apiBase = (value: string) => { try { const url = new URL(value.trim()); return `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`; } catch { return value.trim(); } };
 const backupDigest = (entries: Entry[]) => hash(JSON.stringify([...entries].sort((a, b) => a.path < b.path ? -1 : 1).map(e => [e.path, e.before])));
 // Newest first. The sequence decides; the timestamp only orders backups written before sequences existed.
 const newestFirst = (a: BackupMeta, b: BackupMeta) => (b.info.sequence ?? 0) - (a.info.sequence ?? 0) || b.info.createdAt.localeCompare(a.info.createdAt) || b.info.id.localeCompare(a.info.id);
@@ -41,6 +43,13 @@ export class Manager {
     const all = [this.hubPath, ...Object.values(paths.targets).flat()];
     if (new Set(all).size !== all.length) throw new PublicError('配置路径不能重叠');
     if (!Number.isInteger(retention) || retention < 1 || retention > 100) throw new PublicError('备份保留数必须为 1–100');
+  }
+  // The Hub is read with the same 8 MiB limit as the targets; a save that would exceed it is refused before anything is
+  // replaced, so the Hub on disk always stays readable.
+  private async writeHub(hub: Hub, before: string | null) {
+    const text = asJson(hub);
+    if (byteLength(text) > TARGET_LIMIT) throw new PublicError('供应商数据将超过 8 MiB 上限，没有保存；请删除不用的供应商或缩短备注');
+    await atomicWrite(this.hubPath, text, before);
   }
   private async readHub(): Promise<Hub> {
     const raw = await readText(this.hubPath);
@@ -276,9 +285,17 @@ export class Manager {
       const storedKey = input.mode === 'login' ? undefined : apiKey || old?.apiKey;
       if (input.mode === 'api' && !storedKey) throw new PublicError('API 模式需要密钥');
       const provider: Provider = { ...rest, id, apiKey: storedKey, updatedAt: new Date().toISOString() };
+      // Whether this save changes what a switch writes is judged with today's projection. When it does not, the active
+      // record's definition (possibly under an older rule set) is moved along with the provider, so a display-only edit
+      // is never reported as an edit and never rewrites the target.
+      if (old && record?.providerId === id && record.definition !== undefined
+        && hash(providerDefinition(old, RULES)) === hash(providerDefinition(provider, RULES))
+        && hash(providerDefinition(old, record.rules ?? 1)) === record.definition) {
+        record.definition = hash(providerDefinition(provider, record.rules ?? 1));
+      }
       // An edit keeps the provider's place in the list; a new one goes last.
       hub.providers = old ? hub.providers.map(p => p.id === id ? provider : p) : [...hub.providers, provider];
-      check(); await atomicWrite(this.hubPath, asJson(hub), before);
+      check(); await this.writeHub(hub, before);
       return { id, snapshot: await this.snapshotUnlocked() };
     });
     const inUse = snapshot.active[input.app]?.providerId === id;
@@ -300,7 +317,9 @@ export class Manager {
     const hasSavedKey = !!request.providerId && !!hub.providers.find(p => p.id === request.providerId && p.app === request.app)?.apiKey;
     try {
       const others = request.app === 'chatgpt' ? [current[1]] : [];
-      view.text = composeConfig(request.app, current[index] ?? '', request.draft, others, { id: request.providerId, hasSavedKey: hasSavedKey && !request.draft.apiKey });
+      const composed = composeConfig(request.app, current[index] ?? '', request.draft, others, { id: request.providerId, hasSavedKey: hasSavedKey && !request.draft.apiKey });
+      const keep = new Set([SAVED_KEY_TEXT, ...(request.draft.apiKey ? [request.draft.apiKey] : [])]);
+      view.text = serializeConfig(request.app, maskSecrets(parseConfigText(request.app, composed), keep));
     } catch (error) { return { ...view, error: publicError(error) }; }
     return view;
   }
@@ -315,7 +334,7 @@ export class Manager {
     try { live = parseConfigText(app, (await readText(paths[index])) ?? ''); }
     catch { return { ...view, error: `本机 ${view.name} 无法解析，请先修复该文件` }; }
     const global = splitConfig(app, live).global;
-    return { ...view, text: serializeConfig(app, global), base: hash(canonical(global)) };
+    return { ...view, text: serializeConfig(app, maskSecrets(global)), base: hash(canonical(global)) };
   }
   // Writes edited global settings into the file, keeping the provider-owned fields the file has now. Refused when
   // the file's global part changed after `globalView`, or when the text sets fields that belong to providers.
@@ -334,8 +353,10 @@ export class Manager {
         try { live = parseConfigText(app, current[index] ?? ''); } catch { throw new PublicError('本机配置文件无法解析；请先修复该文件'); }
         const split = splitConfig(app, live);
         if (hash(canonical(split.global)) !== request.base) throw new PublicError('配置文件在编辑期间已被其他程序修改；请重新读取后再修改');
-        if (canonical(edited.global) === canonical(split.global)) return;
-        const next = serializeConfig(app, joinConfig(edited.global, split.owned));
+        // Placeholders left in the text stand for the credentials the file has at that place.
+        const global = restoreSecrets(edited.global, split.global);
+        if (canonical(global) === canonical(split.global)) return;
+        const next = serializeConfig(app, joinConfig(global, split.owned));
         const beforeHub = await readText(this.hubPath);
         const hub = await this.readHub();
         // Our own write must not look like a CLI reformat to the active record.
@@ -356,7 +377,7 @@ export class Manager {
       if (Object.values(hub.active).some(a => a?.providerId === id)) throw new PublicError('请先切换到另一配置再删除当前配置');
       if (!hub.providers.some(p => p.id === id)) throw new PublicError('配置不存在');
       hub.providers = hub.providers.filter(p => p.id !== id);
-      check(); await atomicWrite(this.hubPath, asJson(hub), before);
+      check(); await this.writeHub(hub, before);
       return this.snapshotUnlocked();
     });
   }
@@ -437,7 +458,7 @@ export class Manager {
           }
         } catch { /* Not representable as written (e.g. a Pi provider that no longer exists): imported but not active. */ }
       }
-      if (changed) { check(); await atomicWrite(this.hubPath, asJson(hub), before); }
+      if (changed) { check(); await this.writeHub(hub, before); }
       const snapshot = await this.snapshotUnlocked();
       return { ...snapshot, warnings: [...notices, ...snapshot.warnings] };
     }, true);
@@ -448,7 +469,9 @@ export class Manager {
     const request = modelListRequestSchema.parse(raw);
     let apiKey = request.apiKey?.trim() || undefined;
     if (!apiKey && request.providerId) {
-      apiKey = await this.exclusive(async () => (await this.readHub()).providers.find(p => p.id === request.providerId && p.app === request.app)?.apiKey, true);
+      const saved = await this.exclusive(async () => (await this.readHub()).providers.find(p => p.id === request.providerId && p.app === request.app), true);
+      if (saved?.apiKey && apiBase(saved.baseUrl) !== apiBase(request.baseUrl)) throw new PublicError('Base URL 与保存时不同；请先填写适用于新地址的 API Key，再获取模型列表');
+      apiKey = saved?.apiKey;
     }
     return fetchModelList({ ...request, apiKey }, fetchImpl);
   }

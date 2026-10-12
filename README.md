@@ -41,11 +41,11 @@ macOS 安装包为 Apple Silicon（arm64）dmg，使用 ad-hoc 签名，没有 D
 
 Claude Code 使用 Anthropic Messages；Codex 使用 Responses；Pi 可选择 Anthropic Messages、OpenAI Responses 或 Chat Completions。仅有“OpenAI 兼容”描述不代表端点适合所有应用。
 
-添加供应商是一个页面：顶部是可搜索的预设标签，内置约 20 个常用供应商（Anthropic / OpenAI 官方、DeepSeek、Kimi、智谱、MiniMax、通义千问、火山方舟、OpenRouter 等），点一下就填好 Base URL、协议与模型，并提供官网和“获取 API Key”链接；换预设时已输入的 Key 和备注会保留。预设数据改编自 cc-switch（MIT，见 `THIRD_PARTY_NOTICES.md`）。表单可显示/隐藏 API Key；“从供应商获取”会请求供应商的 `/v1/models`，结果是可筛选的列表，点一个即填入。
+添加供应商是一个页面：顶部是可搜索的预设标签，内置约 20 个常用供应商（Anthropic / OpenAI 官方、DeepSeek、Kimi、智谱、MiniMax、通义千问、火山方舟、OpenRouter 等），点一下就填好 Base URL、协议与模型，并提供官网和“获取 API Key”链接；换预设时已输入的 Key 和备注会保留。预设数据改编自 cc-switch（MIT，见 `THIRD_PARTY_NOTICES.md`；安装包内同样附带此文件，位于 `Mi-Switch.app/Contents/Resources/`）。表单可显示/隐藏 API Key；“从供应商获取”会请求供应商的 `/v1/models`，结果是可筛选的列表，点一个即填入；编辑已保存的供应商时，只有 Base URL 没改才会沿用已保存的 Key，改了地址需要先填新 Key。
 
 Claude Code 的后台任务和 haiku／sonnet／opus／fable 别名默认请求 Anthropic 的模型 ID；网关没有这些模型时，在“模型别名映射”中填写（写入 `ANTHROPIC_DEFAULT_*_MODEL`），或点“全部用默认 Model”。Codex 可选推理强度（`model_reasoning_effort`），只在切换时写入。
 
-侧栏“全局设置”按 CLI 编辑配置文件（Claude `settings.json`、Codex `config.toml`、Pi `settings.json`）中供应商字段以外的部分：hooks、permissions、插件、`sandbox_mode`、MCP 等。它们对所有供应商生效，保存时立即写入本机文件（先自动备份）；读取后文件若被其他程序修改，保存会被拒绝；文本里出现地址、Key、模型等供应商字段时也会被拒绝，并列出字段名。编辑供应商时可展开“使用后的配置文件预览”，只读查看切换后的完整文件；已保存的密钥以占位文字显示。
+侧栏“全局设置”按 CLI 编辑配置文件（Claude `settings.json`、Codex `config.toml`、Pi `settings.json`）中供应商字段以外的部分：hooks、permissions、插件、`sandbox_mode`、MCP 等。它们对所有供应商生效，保存时立即写入本机文件（先自动备份），TOML 的日期与时间保持原类型；读取后若全局部分被其他程序修改，保存会被拒绝（只改供应商字段或排版不算）；文本里出现地址、Key、模型等供应商字段时也会被拒绝，并列出字段名。编辑供应商时可展开“使用后的配置文件预览”，只读查看切换后的完整文件。预览和全局设置里的密钥、令牌等敏感值（包括其他路由表、MCP 服务的令牌）都以占位文字显示；在全局设置中保留占位文字保存，会沿用文件中的原值。
 
 “官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Pi 的对应模式是“沿用 Pi 已有的 Provider”：只切换 `defaultProvider` 与 `defaultModel`，不改动该 Provider 本身（`/login` 保存的登录、`auth.json` 中的密钥或 `models.json` 中的定义）。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
 

@@ -1,9 +1,9 @@
 import { app, BrowserWindow, ipcMain, nativeTheme, net, shell } from 'electron';
 import { isAbsolute, join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Manager } from '../core/manager';
-import { resolvePaths } from '../core/paths';
+import { dataFolder, resolvePaths } from '../core/paths';
 import { publicError } from '../core/errors';
 import { presetLinks } from '../core/presets';
 import type { AppId, ConfigViewRequest, GlobalEdit, ModelListRequest, ProviderInput } from '../core/types';
@@ -17,9 +17,8 @@ if (sandboxRoot) {
   mkdirSync(userData, { recursive: true, mode: 0o700 });
   app.setPath('userData', userData);
 } else {
-  // The app is shown as Mi-Switch, but its data stays in the folder earlier versions created (named MiSwitch), so the
-  // rename does not lose the saved providers or backups.
-  app.setPath('userData', join(app.getPath('appData'), 'MiSwitch'));
+  // The app is shown as Mi-Switch, but its data stays where earlier versions kept it, so the rename loses nothing.
+  app.setPath('userData', dataFolder(app.getPath('appData'), existsSync));
 }
 app.setName('Mi-Switch');
 if (!app.requestSingleInstanceLock()) app.quit();

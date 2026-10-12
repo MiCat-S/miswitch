@@ -15,8 +15,8 @@
   --accent: #3e63dd; --accent-hover: #3358d4; --on-accent: #ffffff; --accent-text: #3451c7; --ring: rgb(62 99 221 / 35%);
   --container: #e4e9ff; --on-container: #1b2559; --on-container-2: #46538c; --hero-tile: #ffffff; --hero-button: rgb(255 255 255 / 75%);
   --select: #e0e5f6; --on-select: #222b4d; --on-select-2: #4a5480; --tint: #e8ecfa; --accent-line: #b4c2f5; --accent-soft: #f6f8ff;
-  --ok-dot: #2f9e7d; --ok-text: #1f7a60; --warn-dot: #f0b232; --warn-text: #9a5b00; --warn-soft: #fff7e6; --warn-line: #f2d49b;
-  --danger: #c7363b; --danger-soft: #fdeeee; --danger-fill: #c7363b; --on-danger: #ffffff;
+  --ok-dot: #2f9e7d; --ok-text: #1f7a60; --warn-dot: #f0b232; --warn-text: #8f5400; --warn-soft: #fff7e6; --warn-line: #f2d49b;
+  --danger: #b02f35; --danger-soft: #fdeeee; --danger-fill: #b02f35; --on-danger: #ffffff;
   --tile: #ffffff; --tile-edge: #e2e5ee; --edge: 0 0 0 1px #e6e9f2, 0 1px 2px rgb(26 29 38 / 4%); --shadow: 0 16px 48px rgb(26 29 38 / 20%);
   --clay: #c4704f; --sky: #4f86c6; --mineral: #4c8c78; --plum: #7a6fc0; --graphite: #3a3f4d; --stone: #767c8e;
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", sans-serif;
@@ -87,11 +87,11 @@ a { color: var(--accent-text); text-underline-offset: 3px; }
 .hue.plum { background: var(--plum); } .hue.graphite { background: var(--graphite); } .hue.stone { background: var(--stone); }
 .tile.letter { box-shadow: none; font-family: var(--sans); font-size: 15px; font-weight: 600; }
 .tile.s36.letter { font-size: 14px; }
-.letter.sky { background: color-mix(in srgb, var(--sky) 16%, var(--panel)); color: color-mix(in srgb, var(--sky) 80%, var(--ink)); }
-.letter.mineral { background: color-mix(in srgb, var(--mineral) 16%, var(--panel)); color: color-mix(in srgb, var(--mineral) 80%, var(--ink)); }
-.letter.plum { background: color-mix(in srgb, var(--plum) 16%, var(--panel)); color: color-mix(in srgb, var(--plum) 80%, var(--ink)); }
-.letter.clay { background: color-mix(in srgb, var(--clay) 16%, var(--panel)); color: color-mix(in srgb, var(--clay) 80%, var(--ink)); }
-.letter.stone { background: color-mix(in srgb, var(--stone) 16%, var(--panel)); color: color-mix(in srgb, var(--stone) 80%, var(--ink)); }
+.letter.sky { background: color-mix(in srgb, var(--sky) 16%, var(--panel)); color: color-mix(in srgb, var(--sky) 45%, var(--ink)); }
+.letter.mineral { background: color-mix(in srgb, var(--mineral) 16%, var(--panel)); color: color-mix(in srgb, var(--mineral) 45%, var(--ink)); }
+.letter.plum { background: color-mix(in srgb, var(--plum) 16%, var(--panel)); color: color-mix(in srgb, var(--plum) 45%, var(--ink)); }
+.letter.clay { background: color-mix(in srgb, var(--clay) 16%, var(--panel)); color: color-mix(in srgb, var(--clay) 45%, var(--ink)); }
+.letter.stone { background: color-mix(in srgb, var(--stone) 16%, var(--panel)); color: color-mix(in srgb, var(--stone) 45%, var(--ink)); }
 
 /* ---------- window: source list + content ---------- */
 .layout { display: grid; grid-template-columns: 232px minmax(0, 1fr); height: 100vh; }

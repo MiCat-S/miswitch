@@ -6,13 +6,15 @@
 
 同日的介面改版也已完成：macOS 設定風格的側欄與「正在使用」摘要卡、可篩選的供應商卡片（▶ 切換、✎ 編輯）、新增與編輯改為整頁並以預設標籤開頭（換預設保留 Key 與備註）、「保存並使用」、保存使用中的供應商立即寫入、全域設定獨立成頁（編輯頁只保留唯讀預覽）、白話狀態與「重新應用」、視窗取得焦點時自動重新偵測、選單列快速切換、模型清單可篩選點選。之後的視覺改版：應用改名為 Mi-Switch（資料資料夾不變）、以 Material 3／Apple／Claude 的配色方法重做色彩與深色模式、標題改用 Source Serif 4 與宋體、Lucide 線條圖示、供應商廠商標誌（自動識別並可手動更換）、應用圖示與選單列圖示「三軌」。行為說明見 `docs/TECHNICAL_DESIGN.md`。
 
+第四輪審查（`docs/SOL_HIGH_REVIEW_2026-10-12.md`，Codex `gpt-6.1-sol` high）的 A1–A12 均已修正，修正與驗證的對照見 `docs/review-fixes/README.md`。
+
 建議順序：先做核心小項，IPC 路徑與 asar 驗證併入打包工作，其餘屬發布階段。
 
 ## 核心小項
 
 - [ ] 預設清單的模型 ID 取自 cc-switch 2026-10-12 的 `main`，會隨供應商更新而過時；需要定期對照更新，或改為只保留端點、模型一律由「獲取模型列表」取得。
 - [ ] `proper-lockfile` 的鎖目錄（`settings.json.lock/`、`config.toml.lock/`）會出現在 CLI 設定目錄中，無害但可見；可評估改放到 MiSwitch 自己的 store 目錄（需保留 Pi `auth.json` 與官方相同的鎖約定）。
-- [ ] `@iarna/toml` 自 2020 年未維護，僅支援 TOML 0.5；若 Codex 日後在 `config.toml` 使用 TOML 1.0 特性會解析失敗。可評估換 `smol-toml`，換前需用本機實際 `config.toml` 做往返測試。
+- [ ] `@iarna/toml` 自 2020 年未維護，僅支援 TOML 0.5；若 Codex 日後在 `config.toml` 使用 TOML 1.0 特性會解析失敗。可評估換 `smol-toml`，換前需用本機實際 `config.toml` 做往返測試。已知實例：沒有小數秒的本地時間（如 `clock = 07:32:00`）後面緊接下一行鍵值時解析失敗（`07:32:00.000` 或行尾註解則正常）。
 - [ ] 唯讀目標仍可透過 rename 被覆寫為 0600。文件已記錄不保留既有 mode／ACL；發布前決定是否尊重既有檔案權限。
 
 ## 介面與無障礙

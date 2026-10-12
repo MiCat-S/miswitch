@@ -7,12 +7,47 @@ import { PublicError } from './errors';
 import type { AppId, ConfigDraft, Provider } from './types';
 
 const isObject = (value: unknown): value is Record<string, any> => !!value && typeof value === 'object' && !Array.isArray(value);
-const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value));
+// Structural copy that keeps TOML date and time values (Date subclasses from @iarna/toml) as they are, so a save
+// writes them back as TOML dates rather than strings.
+const clone = <T>(value: T): T => Array.isArray(value) ? value.map(clone) as T
+  : isObject(value) && !(value instanceof Date) ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, clone(item)])) as T : value;
 const managedPattern = /^miswitch_[a-f0-9]{32}$/;
 // Shown instead of a saved key: the renderer never receives one. Saving the text never stores it as a key.
 export const SAVED_KEY_TEXT = '（已保存的密钥，此处不显示）';
 // A provider that is not saved yet has no ID, so its Pi provider entry has no name yet either.
 export const NEW_PI_PROVIDER_TEXT = 'miswitch_（保存后生成）';
+// Shown instead of any credential the file holds outside the provider's own fields (another route's token, an MCP
+// server's secret, a header). Saving the placeholder unchanged keeps the value the file has.
+export const HIDDEN_SECRET_TEXT = '（已隐藏，保存时保留原值）';
+// Credential-like field names: anything about secrets, passwords or authorization, and names ending in a token or key.
+export const isSecretName = (name: string) => /secret|password|passwd|credential|authorization|bearer/i.test(name)
+  || /(token|api[_-]?key|access[_-]?key|private[_-]?key)$/i.test(name) || /^api[_-]?key[_-]?helper$/i.test(name);
+const pathText = (path: string[]) => path.join('.');
+// Replaces every non-empty credential string with the placeholder; `keep` lists values the renderer already has.
+export function maskSecrets<T>(value: T, keep: Set<string> = new Set()): T {
+  const walk = (item: any): any => Array.isArray(item) ? item.map(walk)
+    : isObject(item) && !(item instanceof Date) ? Object.fromEntries(Object.entries(item).map(([key, v]) =>
+      [key, isSecretName(key) && typeof v === 'string' && v && !keep.has(v) ? HIDDEN_SECRET_TEXT : walk(v)]))
+    : item;
+  return walk(value);
+}
+// Puts back the file's value wherever the edited text still has the placeholder; a placeholder with no value at the
+// same place in the file cannot be resolved and is refused.
+export function restoreSecrets(edited: Record<string, any>, live: Record<string, any>): Record<string, any> {
+  const walk = (item: any, original: any, path: string[]): any => {
+    if (Array.isArray(item)) return item.map((v, i) => walk(v, Array.isArray(original) ? original[i] : undefined, [...path, String(i)]));
+    if (!isObject(item) || item instanceof Date) return item;
+    return Object.fromEntries(Object.entries(item).map(([key, v]) => {
+      const before = isObject(original) && Object.hasOwn(original, key) ? original[key] : undefined;
+      if (v === HIDDEN_SECRET_TEXT) {
+        if (typeof before !== 'string') throw new PublicError(`“${pathText([...path, key])}”的隐藏值在原文件中不存在；请填写实际的值`);
+        return [key, before];
+      }
+      return [key, walk(v, before, [...path, key])];
+    }));
+  };
+  return walk(edited, live, []);
+}
 
 // The one file each app's editor shows: Claude settings.json, Codex config.toml, Pi settings.json.
 export const editorFile = (app: AppId) => ({ index: app === 'pi' ? 2 : 0, format: app === 'chatgpt' ? 'toml' as const : 'json' as const });

@@ -123,8 +123,12 @@ export function App() {
   // Background refreshes are numbered so an older answer never replaces the result of a later action.
   const sequence = useRef(0);
   const busyRef = useRef(false);
+  // A change reported while an action runs (from the menu bar or the window regaining focus) is read afterwards.
+  const missed = useRef(false);
   const refresh = () => {
-    if (!bridge || busyRef.current) return;
+    if (!bridge) return;
+    if (busyRef.current) { missed.current = true; return; }
+    missed.current = false;
     const n = ++sequence.current;
     void bridge.snapshot().then(s => { if (n === sequence.current) { setSnapshot(s); setLoadFailed(false); } }).catch(() => undefined);
   };
@@ -132,7 +136,8 @@ export function App() {
     if (!bridge) return;
     let mounted = true;
     // The first load also imports each CLI's current configuration once, so it appears as the first provider.
-    void bridge.importLive().then(s => { if (mounted) setSnapshot(s); }).catch(e => { if (mounted) { setLoadFailed(true); setError(`读取失败：${errorText(e)}`); } });
+    const n = ++sequence.current;
+    void bridge.importLive().then(s => { if (mounted && n === sequence.current) setSnapshot(s); }).catch(e => { if (mounted) { setLoadFailed(true); setError(`读取失败：${errorText(e)}`); } });
     // Coming back to the window, or a switch from the menu bar, re-reads the files.
     window.addEventListener('focus', refresh);
     const off = bridge.onChanged(refresh);
@@ -153,9 +158,12 @@ export function App() {
       const text = errorText(e);
       setError(text);
       // The provider was stored even though writing it failed; leave the editor so it is not saved twice.
-      if (text.startsWith(SAVED_NOT_APPLIED)) { setEditor(undefined); busyRef.current = false; refresh(); }
+      if (text.startsWith(SAVED_NOT_APPLIED)) { setEditor(undefined); missed.current = true; }
       return false;
-    } finally { busyRef.current = false; setBusy(false); }
+    } finally {
+      busyRef.current = false; setBusy(false);
+      if (missed.current) refresh();
+    }
   };
 
   const diagnosis = snapshot?.diagnostics.find(d => d.app === app);

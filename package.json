@@ -46,6 +46,12 @@
       "package.json"
     ],
     "asar": true,
+    "extraResources": [
+      {
+        "from": "THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      }
+    ],
     "mac": {
       "target": [
         "dmg"

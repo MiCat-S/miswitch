@@ -123,6 +123,16 @@ test('model lists use the right auth headers, fall back across candidate URLs an
       assert.deepEqual((await f.manager.listModels({ app: 'chatgpt', baseUrl: `${base}/v1`, protocol: 'openai-responses', providerId: saved.id })).models, ['model-a', 'model-b']);
       assert.equal(seen[0].headers.authorization, 'Bearer sk-saved-key');
       await assert.rejects(() => f.manager.listModels({ app: 'claude', baseUrl: `${base}/v1`, protocol: 'anthropic-messages', providerId: saved.id }), /需要 API Key/);
+      // The saved key is bound to the address it was saved with: a trailing slash is the same address, another path is not.
+      seen.length = 0;
+      await f.manager.listModels({ app: 'chatgpt', baseUrl: `${base}/v1/`, protocol: 'openai-responses', providerId: saved.id });
+      assert.equal(seen[0].headers.authorization, 'Bearer sk-saved-key');
+      seen.length = 0;
+      await assert.rejects(() => f.manager.listModels({ app: 'chatgpt', baseUrl: `${base}/other/v1`, protocol: 'openai-responses', providerId: saved.id }), /Base URL 与保存时不同/);
+      assert.equal(seen.length, 0);
+      // A key typed for the new address is used as usual.
+      await f.manager.listModels({ app: 'chatgpt', baseUrl: `${base}/v1`, protocol: 'openai-responses', providerId: saved.id, apiKey: 'sk-typed' });
+      assert.equal(seen[0].headers.authorization, 'Bearer sk-typed');
     } finally { await f.cleanup(); }
   } finally { server.close(); }
 });
