@@ -45,6 +45,7 @@ export class Manager {
       uuid.parse(input.id); providerSchema.parse({ ...input, apiKey }); z.string().datetime().parse(updatedAt);
       if (apiKey !== undefined) z.string().parse(apiKey);
     }
+    if (new Set(hub.providers.map(p => p.id)).size !== hub.providers.length) throw new PublicError('Hub 包含重复的配置 ID');
     for (const [app, record] of Object.entries(hub.active)) {
       appSchema.parse(app);
       z.object({ providerId: uuid, appliedAt: z.string().datetime(), fingerprint: z.string().optional(), definition: z.string().optional(), hashes: z.record(z.string(), z.string()) }).parse(record);

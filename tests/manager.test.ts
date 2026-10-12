@@ -210,6 +210,15 @@ test('Claude small/fast model is written to the haiku route; legacy and alias ro
     await assert.rejects(() => f.manager.save({ ...input('claude'), mode: 'login', apiKey: undefined, smallFastModel: 'x' }), /仅适用于 Claude Code 的 API 模式/);
   } finally { await f.cleanup(); }
 });
+test('a Hub with duplicate provider IDs is rejected', async () => {
+  const f = await fixture();
+  try {
+    await add(f.manager);
+    const hubPath = join(f.paths.data, 'hub.json'); const hub = JSON.parse(await readFile(hubPath, 'utf8'));
+    hub.providers.push({ ...hub.providers[0], name: 'Copy' }); await writeFile(hubPath, JSON.stringify(hub));
+    await assert.rejects(() => f.manager.snapshot(), /重复的配置 ID/);
+  } finally { await f.cleanup(); }
+});
 test('concurrent managers serialize Hub updates without dropping providers', async () => {
   const f = await fixture();
   try {
