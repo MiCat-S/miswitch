@@ -15,6 +15,20 @@ const log = '/tmp/mock-requests.jsonl';
 const work = '/work';
 const officialAuth = join(home, '.codex', 'auth.json');
 const officialAuthText = JSON.stringify({ auth_mode: 'apikey', OPENAI_API_KEY: 'sk-official-login-stays' }) + '\n';
+const piDir = join(home, '.pi', 'agent');
+// Turns the extension on the way `pi install` does: by listing the package in settings.json.
+function enableRelays() {
+  const path = join(piDir, 'settings.json');
+  const settings = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
+  writeFileSync(path, JSON.stringify({ ...settings, packages: ['npm:pi-custom-providers'] }, null, 2));
+}
+// The provider's endpoint must be in exactly the expected file.
+function piEntries(id: string, file: 'models.json' | 'custom-providers.json'): string | null {
+  const read = (name: string) => existsSync(join(piDir, name)) ? JSON.parse(readFileSync(join(piDir, name), 'utf8')) : {};
+  const inModels = !!read('models.json').providers?.[id]; const inRelays = !!read('custom-providers.json')[id];
+  const ok = file === 'models.json' ? inModels && !inRelays : inRelays && !inModels;
+  return ok && read('auth.json')[id]?.type === 'api_key' ? null : `(${id} not registered in ${file} + auth.json)`;
+}
 type Request = { method: string; path: string; model?: string; stream: boolean; authorization?: string; xApiKey?: string; userAgent?: string };
 type Case = { app: AppId; name: string; provider: ProviderInput; command: string[]; env?: Record<string, string>; expect: { path: RegExp; model: string; header: 'authorization' | 'xApiKey'; value: string }; before?(): void; after?(output: string): string | null };
 
@@ -45,12 +59,28 @@ const cases: Case[] = [
     before: () => { mkdirSync(join(home, '.codex'), { recursive: true }); writeFileSync(officialAuth, officialAuthText); },
     after: () => readFileSync(officialAuth, 'utf8') !== officialAuthText ? 'auth.json was modified'
       : !/model_context_window = 200_?000\n/.test(readFileSync(join(home, '.codex', 'config.toml'), 'utf8')) ? 'context fields missing' : null },
-  { app: 'pi', name: 'Pi · openai-completions', expect: { path: /^\/v1\/chat\/completions$/, model: 'pi-container-model', header: 'authorization', value: 'Bearer sk-pi-container-test' },
-    provider: { app: 'pi', name: 'Pi mock', mode: 'api', baseUrl: `${base}/v1`, apiKey: 'sk-pi-container-test', model: 'pi-container-model', protocol: 'openai-completions' },
+  { app: 'pi', name: 'Pi · openai-completions (models.json)', expect: { path: /^\/v1\/chat\/completions$/, model: 'pi-container-model', header: 'authorization', value: 'Bearer sk-pi-container-test' },
+    provider: { app: 'pi', name: 'Pi mock', mode: 'api', piProviderId: 'mock-completions', baseUrl: `${base}/v1`, apiKey: 'sk-pi-container-test', model: 'pi-container-model', protocol: 'openai-completions' },
+    after: () => piEntries('mock-completions', 'models.json'),
     command: ['pi', '-p', '--no-session', 'Reply with ok'] },
   // Pi's anthropic-messages client appends /v1/messages itself, so the base URL carries no /v1.
   { app: 'pi', name: 'Pi · anthropic-messages', expect: { path: /^\/v1\/messages$/, model: 'pi-container-model', header: 'xApiKey', value: 'sk-pi-anthropic-test' },
     provider: { app: 'pi', name: 'Pi anthropic mock', mode: 'api', baseUrl: base, apiKey: 'sk-pi-anthropic-test', model: 'pi-container-model', protocol: 'anthropic-messages' },
+    command: ['pi', '-p', '--no-session', 'Reply with ok'] },
+  // With pi-custom-providers enabled, a Mi-Switch provider becomes a relay in custom-providers.json (key in auth.json).
+  { app: 'pi', name: 'Pi · pi-custom-providers relay', expect: { path: /^\/v1\/responses$/, model: 'pi-relay-model', header: 'authorization', value: 'Bearer sk-pi-relay-test' },
+    provider: { app: 'pi', name: 'Pi relay mock', mode: 'api', piProviderId: 'mock-relay', baseUrl: `${base}/v1`, apiKey: 'sk-pi-relay-test', model: 'pi-relay-model', protocol: 'openai-responses' },
+    before: () => enableRelays(), after: () => piEntries('mock-relay', 'custom-providers.json'),
+    command: ['pi', '-p', '--no-session', 'Reply with ok'] },
+  // A relay the user set up in Pi themselves: Mi-Switch only selects it.
+  { app: 'pi', name: 'Pi · existing relay selected', expect: { path: /^\/v1\/responses$/, model: 'pi-relay-model', header: 'authorization', value: 'Bearer sk-user-relay-test' },
+    provider: { app: 'pi', name: 'user-relay', mode: 'login', loginProvider: 'user-relay', model: 'pi-relay-model', protocol: 'openai-responses' },
+    before: () => {
+      const custom = join(piDir, 'custom-providers.json');
+      writeFileSync(custom, JSON.stringify({ ...JSON.parse(readFileSync(custom, 'utf8')), 'user-relay': { baseUrl: `${base}/v1`, api: 'openai-responses' } }, null, 2));
+      const auth = join(piDir, 'auth.json');
+      writeFileSync(auth, JSON.stringify({ ...JSON.parse(readFileSync(auth, 'utf8')), 'user-relay': { type: 'api_key', key: 'sk-user-relay-test' } }, null, 2));
+    },
     command: ['pi', '-p', '--no-session', 'Reply with ok'] }
 ];
 

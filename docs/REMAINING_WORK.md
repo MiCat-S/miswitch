@@ -8,6 +8,8 @@
 
 第四輪審查（`docs/SOL_HIGH_REVIEW_2026-10-12.md`，Codex `gpt-6.1-sol` high）的 A1–A12 均已修正，修正與驗證的對照見 `docs/review-fixes/README.md`。
 
+2026-10-13：Pi 改為多供應商。依官方文件，Pi 在 `auth.json`、`models.json` 與 pi-custom-providers 的 `custom-providers.json` 同時保存多個 Provider，`settings.json` 只記預設選擇；Mi-Switch 現在讀取全部 Provider、以使用者填寫的 Provider ID 登記自己的 API 供應商並與之並存，切換只改預設（規則集 3）。舊資料在新版第一次啟動時自動重新讀取一次 Pi。同時修正：編輯頁在「官方登錄／沿用已有 Provider」模式下仍顯示 API 欄位（CSS 權重問題，冒煙測試改為檢查實際版面）；Pi 寫入有四個檔案加 Hub，恢復日誌上限隨目標數調整。
+
 建議順序：先做核心小項，IPC 路徑與 asar 驗證併入打包工作，其餘屬發布階段。
 
 ## 核心小項
@@ -15,13 +17,15 @@
 - [ ] 預設清單的模型 ID 取自 cc-switch 2026-10-12 的 `main`，會隨供應商更新而過時；需要定期對照更新，或改為只保留端點、模型一律由「獲取模型列表」取得。
 - [ ] `proper-lockfile` 的鎖目錄（`settings.json.lock/`、`config.toml.lock/`）會出現在 CLI 設定目錄中，無害但可見；可評估改放到 MiSwitch 自己的 store 目錄（需保留 Pi `auth.json` 與官方相同的鎖約定）。
 - [ ] `@iarna/toml` 自 2020 年未維護，僅支援 TOML 0.5；若 Codex 日後在 `config.toml` 使用 TOML 1.0 特性會解析失敗。可評估換 `smol-toml`，換前需用本機實際 `config.toml` 做往返測試。已知實例：沒有小數秒的本地時間（如 `clock = 07:32:00`）後面緊接下一行鍵值時解析失敗（`07:32:00.000` 或行尾註解則正常）。
+- [ ] Pi 內建 Provider 的 ID 清單（`piBuiltinIds`，用於拒絕重名）取自 2026-10-13 的 `providers.md`，Pi 新增內建 Provider 時需同步。
+- [ ] pi-custom-providers 是第三方擴充（MIT），`custom-providers.json` 格式可能變動；Mi-Switch 只寫 `baseUrl`、`api`，不提供 `costMultiplier`、`fastModePolicy` 等欄位的編輯。
 - [ ] 唯讀目標仍可透過 rename 被覆寫為 0600。文件已記錄不保留既有 mode／ACL；發布前決定是否尊重既有檔案權限。
 
 ## 介面與無障礙
 
 - [ ] Hub 結構損壞（例如重複 ID）時只顯示原因並暫停所有操作，沒有修復畫面。可提供只讀的衝突列表（不含密鑰）、開啟資料夾與完整備份入口，由使用者確認保留或改 ID。
 - [ ] 全域設定頁的配置文件編輯器是純文字框，沒有語法高亮與行號；CodeMirror 需要放寬 CSP 的 `style-src`。另外 `config.toml` 寫回時不保留註解（切換本來就如此），若要保留需換成保留格式的 TOML 編輯方式。
-- [ ] CSS 仍有 `button`、`label`、`input`、`fieldset`、`dialog` 等全域選擇器，後續元件擴充時容易互相影響；逐步限定作用域。
+- [ ] CSS 仍有 `button`、`label`、`input`、`fieldset`、`dialog` 等全域選擇器，後續元件擴充時容易互相影響；逐步限定作用域。已發生過一次：`fieldset:not(.page-body)` 的 `display: grid` 蓋過 `fieldset[hidden]`（2026-10-13 修正）。
 - [ ] 表單錯誤缺少 `aria-invalid`、`aria-describedby` 與首次錯誤聚焦。
 - [ ] 供應商卡片只顯示備註第一行（滑鼠停留顯示全文），多行備註只能在編輯頁看完整內容。
 - [ ] 選單列只能切換，不顯示「配置文件被其他程式改過」等異常；可考慮在選單中加 ⚠ 與「重新應用」。
@@ -32,7 +36,6 @@
 
 ## 測試範圍
 
-- [ ] 容器案例缺少 Pi 的 `openai-responses` 協定。
 - [ ] 容器案例沒有真實登入情境：Claude／Codex 的官方 OAuth、Codex 使用 `cli_auth_credentials_store = "keyring"` 時 `auth.json` 不存在的行為。
 - [ ] IPC 來源比對（`src/desktop/main.ts` 以 `pathToFileURL().href` 對比 frame URL）已在 macOS arm64 打包版（asar、含空白／中文／`#` 的路徑）驗證；Windows／Linux 打包版尚未驗證。
 - [ ] Claude 背景任務的動態驗證：容器只驗證 `--model haiku` 主對話走小型／快速模型，尚未觸發任何真正的背景請求。
@@ -44,7 +47,7 @@
 - [ ] Windows 與 Linux 的 GUI 測試（含系統匣選單與關閉最後一個視窗即結束的行為）；Windows 的 ACL、檔案佔用導致 rename 失敗的行為。
 - [ ] 簽名與公證：macOS arm64 dmg 已可用 `npm run package` 產生，但只有 ad-hoc 簽名、未公證（需 Developer ID 憑證）；Intel／universal、Windows、Linux 安裝包尚未建置；應用程式圖示已設定，但沒有 Windows 的 ico 與 Linux 尺寸的版本。
 - [ ] 開發依賴審計的 8 個 moderate 項目，來自 electron-builder 的 `sprintf-js → roarr → global-agent → @electron/get` 鏈；執行期依賴為 0。
-- [ ] CLI 版本矩陣：容器固定 Claude Code 2.1.296、Codex 0.162.1、Pi 0.73.1；本機實際使用 ChatGPT 桌面版內建的 Codex 0.162.0-alpha.17.2。
+- [ ] CLI 版本矩陣：容器固定 Claude Code 2.1.296、Codex 0.162.1、Pi 1.0.4（加 pi-custom-providers 0.4.3）；本機實際使用 ChatGPT 桌面版內建的 Codex 0.162.0-alpha.17.2 與 Pi 1.0.4。npm 上 Pi 最新為 1.2.0，尚未驗證。
 
 ## 環境
 

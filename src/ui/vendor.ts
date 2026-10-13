@@ -9,12 +9,18 @@ const hosts: [string, VendorIcon][] = [
   ['xiaomimimo.com', 'mimo'], ['baidubce.com', 'qianfan'], ['openrouter.ai', 'openrouter'], ['siliconflow.cn', 'siliconflow'], ['siliconflow.com', 'siliconflow']
 ];
 // A Map, so a provider ID such as `__proto__` or `constructor` finds nothing instead of an inherited property.
-const loginMarks = new Map<string, VendorIcon>([['claude', 'claude'], ['chatgpt', 'openai'], ['anthropic', 'claude'], ['openai', 'openai']]);
+// Claude Code and Codex logins, and Pi's built-in provider IDs (docs/providers.md) that have a mark here.
+const loginMarks = new Map<string, VendorIcon>([['claude', 'claude'], ['chatgpt', 'openai'], ['anthropic', 'claude'], ['openai', 'openai'], ['openai-codex', 'openai'],
+  ['deepseek', 'deepseek'], ['openrouter', 'openrouter'], ['zai', 'zai'], ['minimax', 'minimax'], ['moonshot', 'kimi'], ['kimi-coding', 'kimi'], ['xiaomi', 'mimo'], ['qwen', 'qwen']]);
 
 // What `icon` left unset resolves to: the vendor behind the Base URL, the CLI's own vendor for an official login,
 // or null for the letter avatar.
 export function autoIcon(p: Pick<PublicProvider, 'app' | 'mode' | 'baseUrl' | 'loginProvider'>): VendorIcon | null {
-  if (p.mode === 'login') return loginMarks.get(p.app === 'pi' ? p.loginProvider : p.app) ?? null;
+  if (p.mode === 'login') {
+    const known = loginMarks.get(p.app === 'pi' ? p.loginProvider : p.app);
+    // A Pi relay of the user's own (e.g. in custom-providers.json) is recognised by its address.
+    if (known || p.app !== 'pi' || !p.baseUrl) return known ?? null;
+  }
   let host: string;
   // `api.deepseek.com.` is the same host written with the DNS root.
   try { host = new URL(p.baseUrl).hostname.toLowerCase().replace(/\.$/, ''); } catch { return null; }

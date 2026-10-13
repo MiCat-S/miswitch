@@ -2,7 +2,7 @@
 
 一个仅支持 **Claude Code、OpenAI Codex CLI、Pi Coding Agent** 的本机配置管理器。Electron + React + TypeScript，macOS 设置风格：侧栏列出三个 CLI 及其正在使用的供应商，主区先显示“正在使用”的摘要，下方是可筛选的供应商卡片，点 ▶ 即切换；菜单栏图标也能直接切换。供应商显示厂商标志（依预设或 Base URL 自动识别，也可在编辑页更换）。写入前备份、恢复、外部变更检测；跟随系统深浅色。
 
-仓库与内部标识仍叫 `miswitch`（目录、IPC 通道、Pi 的 `miswitch_` Provider 前缀）；应用显示名称为 Mi-Switch。设置数据仍保存在 `~/Library/Application Support/MiSwitch`，改名不影响已有的供应商与备份。
+仓库与内部标识仍叫 `miswitch`（目录、IPC 通道、旧版 Pi Provider 的 `miswitch_` 前缀）；应用显示名称为 Mi-Switch。设置数据仍保存在 `~/Library/Application Support/MiSwitch`，改名不影响已有的供应商与备份。
 
 **按用户要求使用明文 JSON 存储，不做加密，不依赖钥匙串。** 界面不回传已保存的 API Key；目标配置、Hub 和历史备份仍包含明文凭据。
 
@@ -35,7 +35,7 @@ macOS 安装包为 Apple Silicon（arm64）dmg，使用 ad-hoc 签名，没有 D
 | --- | --- | --- |
 | Claude | Claude Code | `~/.claude/settings.json` |
 | ChatGPT | OpenAI Codex CLI | `~/.codex/config.toml`；`auth.json` 只备份不改写 |
-| Pi | Pi Coding Agent，原 `badlogic/pi-mono` 项目 | `~/.pi/agent/models.json`、`auth.json`、`settings.json` |
+| Pi | Pi Coding Agent（`earendil-works/pi`，原 `badlogic/pi-mono`） | `~/.pi/agent/models.json`、`auth.json`、`settings.json`；使用 pi-custom-providers 扩展时另有 `custom-providers.json` |
 
 支持 `CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR` 目录覆盖。GUI 只能读取启动进程继承的环境，不能读取其他终端的环境。
 
@@ -47,7 +47,13 @@ Claude Code 的后台任务和 haiku／sonnet／opus／fable 别名默认请求 
 
 侧栏“全局设置”按 CLI 编辑配置文件（Claude `settings.json`、Codex `config.toml`、Pi `settings.json`）中供应商字段以外的部分：hooks、permissions、插件、`sandbox_mode`、MCP 等。它们对所有供应商生效，保存时立即写入本机文件（先自动备份），TOML 的日期与时间保持原类型；读取后若全局部分被其他程序修改，保存会被拒绝（只改供应商字段或排版不算）；文本里出现地址、Key、模型等供应商字段时也会被拒绝，并列出字段名。编辑供应商时可展开“使用后的配置文件预览”，只读查看切换后的完整文件。预览和全局设置里的密钥、令牌等敏感值（包括其他路由表、MCP 服务的令牌）都以占位文字显示；在全局设置中保留占位文字保存，会沿用文件中的原值。
 
-“官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Pi 的对应模式是“沿用 Pi 已有的 Provider”：只切换 `defaultProvider` 与 `defaultModel`，不改动该 Provider 本身（`/login` 保存的登录、`auth.json` 中的密钥或 `models.json` 中的定义）。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
+“官方登录”模式恢复官方路由并保留已有登录凭据；登录、刷新和多个 OAuth 账号的管理继续交给目标 CLI。Claude/Codex 的钥匙串登录不能通过是否存在 `auth.json` 判断，请分别运行 `/status` 或 `codex login status` 验证。
+
+Pi 本身同时保存多个 Provider：`auth.json` 按 Provider ID 存放 `/login` 的登录与 API Key，`models.json` 的 `providers` 定义自建端点，pi-custom-providers 扩展的 `custom-providers.json` 定义中转站（密钥同样在 `auth.json`），`settings.json` 的 `defaultProvider`／`defaultModel` 只是默认选择，Pi 的 `/model` 能看到全部。Mi-Switch 按这个结构工作：
+
+- 首次运行时读取 Pi 中定义的每一个 Provider（三个文件中任一处出现的 ID），列为“沿用 Pi 已有的 Provider”，当前默认的那个显示为正在使用；只存在于扩展模型缓存 `models-store.json`、没有配置的条目不读取。之后 Pi 中新增的 Provider 点“从 Pi 重新读取”加入。旧版只读取了默认的那一个，升级后第一次启动会自动重新读取一次。
+- 切换“沿用 Pi 已有的 Provider”只改 `defaultProvider` 与 `defaultModel`，不改动 Provider 本身；模型可留空，留空时删除 `defaultModel`，由 Pi 自动选择。
+- 用 API Key 添加的 Pi 供应商需要填写 Pi Provider ID（不能与 Pi 已有的或内置的 Provider 重名），保存时就登记到 Pi，与其他 Provider 并存：装有 pi-custom-providers 时地址写入 `custom-providers.json`，否则写入 `models.json`；密钥写入 `auth.json`。切换只改默认选择，删除供应商时一并移除这些登记。旧版以 `miswitch_` 开头的 Provider 继续可用。
 
 Codex 的写法与 cc-switch 相同：第三方路由写在 `model_providers.custom` 并以 `experimental_bearer_token` 保存密钥，官方路由移除 `model_provider`；两个工具可以接管同一份配置。
 

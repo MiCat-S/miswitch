@@ -56,6 +56,8 @@ createServer((req, res) => {
         [null, '[DONE]']
       ]);
     }
+    // Model lists, which pi-custom-providers requests from a relay before registering it.
+    if (url.pathname.endsWith('/models')) return json(res, { object: 'list', data: ['pi-relay-model', 'pi-container-model'].map(id => ({ id, object: 'model', created: 1, owned_by: 'mock' })) });
     json(res, { data: [] });
   });
 }).listen(port, '127.0.0.1', () => console.log(`mock listening on ${port}`));

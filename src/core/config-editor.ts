@@ -110,8 +110,10 @@ export function composeConfig(app: AppId, text: string, draft: ConfigDraft, othe
   const value = parseConfigText(app, text);
   const mode = draft.mode ?? 'api';
   if (app === 'pi') {
-    value.defaultProvider = mode === 'login' ? (draft.loginProvider || 'anthropic') : provider.id ? `miswitch_${provider.id.replaceAll('-', '')}` : NEW_PI_PROVIDER_TEXT;
-    value.defaultModel = draft.model ?? '';
+    value.defaultProvider = mode === 'login' ? (draft.loginProvider || 'anthropic')
+      : draft.piProviderId || (provider.id ? `miswitch_${provider.id.replaceAll('-', '')}` : NEW_PI_PROVIDER_TEXT);
+    // An existing provider without a model leaves the choice to Pi.
+    if (draft.model) value.defaultModel = draft.model; else delete value.defaultModel;
     return serializeConfig(app, value);
   }
   const p = {

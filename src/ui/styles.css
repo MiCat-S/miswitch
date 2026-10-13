@@ -204,8 +204,9 @@ main { display: flex; flex-direction: column; min-width: 0; min-height: 0; overf
 
 /* ---------- forms: editor and global settings ---------- */
 fieldset { margin: 0; border: 0; padding: 0; min-width: 0; }
-fieldset[hidden] { display: none; }
 fieldset:not(.page-body) { display: grid; gap: 12px; }
+/* After the grid rule, which has the same specificity: a hidden fieldset (e.g. API fields in login mode) stays hidden. */
+fieldset[hidden] { display: none; }
 .form { padding: 16px; display: grid; gap: 12px; }
 label { display: grid; gap: 6px; font-size: 12px; font-weight: 500; color: var(--secondary); min-width: 0; }
 input, select, textarea { width: 100%; min-width: 0; font-size: 13px; border: 1px solid var(--control); border-radius: 8px; background: var(--field); color: var(--ink); }

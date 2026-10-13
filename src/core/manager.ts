@@ -2,7 +2,7 @@ import { join, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { lstat, readdir, unlink } from 'node:fs/promises';
 import { z } from 'zod';
-import { patchProvider, claudeEnvKeys, jsonObject, asJson, canonical, managedFingerprint, providerDefinition, liveProvider, RULES } from './adapters';
+import { patchProvider, claudeEnvKeys, jsonObject, asJson, canonical, managedFingerprint, providerDefinition, liveProvider, livePiProviders, piId, piIdConflict, piKnownModels, piUsesRelays, registerPiProvider, unregisterPiProvider, RULES } from './adapters';
 import { PENDING_MESSAGE, PublicError, SAVED_NOT_APPLIED, publicError } from './errors';
 import { ARCHIVE_LIMIT, TARGET_LIMIT, atomicWrite, byteLength, ensureDirectory, hash, readText, replaceText, syncDirectory, withLocks } from './files';
 import type { Paths } from './paths';
@@ -62,6 +62,7 @@ export class Manager {
       if (apiKey !== undefined) z.string().parse(apiKey);
     }
     if (hub.imported !== undefined) z.partialRecord(appSchema, z.string().datetime()).parse(hub.imported);
+    if (hub.upgrades !== undefined) z.array(z.string().max(64)).max(32).parse(hub.upgrades);
     if (new Set(hub.providers.map(p => p.id)).size !== hub.providers.length) throw new PublicError('Hub 包含重复的配置 ID；请先备份 hub.json，再手动删除或改正重复项');
     for (const [app, record] of Object.entries(hub.active)) {
       appSchema.parse(app);
@@ -72,7 +73,9 @@ export class Manager {
   private encode(value: unknown): string { return asJson(value); }
   private decode(text: string): unknown { return JSON.parse(text); }
   private validateEntries(value: unknown, allowHub: boolean): Entry[] {
-    const entries = z.array(z.object({ path: z.string(), before: z.string().nullable(), after: z.string().nullable() }).strict()).max(4).parse(value);
+    // A journal holds every target of one app plus the Hub (Pi: four files and the Hub).
+    const most = Math.max(...Object.values(this.paths.targets).map(t => t.length)) + 1;
+    const entries = z.array(z.object({ path: z.string(), before: z.string().nullable(), after: z.string().nullable() }).strict()).max(most).parse(value);
     const allowed = new Set([...Object.values(this.paths.targets).flat(), ...(allowHub ? [this.hubPath] : [])]);
     if (new Set(entries.map(e => e.path)).size !== entries.length || entries.some(e => !allowed.has(e.path))) throw new PublicError('恢复日志包含未授权路径');
     return entries;
@@ -80,7 +83,8 @@ export class Manager {
   // A backup must hold the complete file set of its app. Older backups written before a target was
   // added are accepted only through the explicit legacy sets below; any other subset is rejected,
   // because restoring part of a multi-file configuration can leave the CLI pointing at nothing.
-  private static legacySets: Partial<Record<AppId, string[][]>> = { chatgpt: [['config.toml']] };
+  // Target sets of earlier versions; their backups stay restorable. Pi gained custom-providers.json later.
+  private static legacySets: Partial<Record<AppId, string[][]>> = { chatgpt: [['config.toml']], pi: [['models.json', 'auth.json', 'settings.json']] };
   private validateBackupSet(app: AppId, entries: Entry[]): void {
     const names = entries.map(e => basename(e.path)).sort();
     const full = this.paths.targets[app].map(p => basename(p)).sort();
@@ -234,19 +238,21 @@ export class Manager {
         try { return await readText(path); } catch { unreadable = true; return null; }
       }));
       const record = hub.active[app];
-      // Records written before fingerprints (or before a target was added) only know the bytes they wrote.
-      // They are judged by those bytes alone; a missing schema field is not evidence of external edits.
+      // Records written before fingerprints only know the bytes they wrote and are judged by those alone; a missing
+      // schema field is not evidence of external edits. A target added later (Pi's custom-providers.json) has no
+      // recorded bytes; it does not count against any record.
       const legacy = !!record && record.fingerprint === undefined;
-      const bytesMatch = !!record && !unreadable && paths.every((path, i) => legacy && !(path in record.hashes) ? true : record.hashes[path] === hash(originals[i]));
+      const bytesMatch = !!record && !unreadable && paths.every((path, i) => !(path in record.hashes) ? true : record.hashes[path] === hash(originals[i]));
       const rules = record?.rules ?? 1;
-      const current = unreadable ? null : managedFingerprint(app, originals, rules);
-      const written = !!record && (legacy ? bytesMatch : current !== null && hash(current) === record.fingerprint);
-      const state = !record ? 'none' as const : written ? 'written' as const : 'drift' as const;
       // Records without `definition` were written by versions that cleared the record on every edit.
       const provider = record && hub.providers.find(p => p.id === record.providerId);
+      const current = unreadable ? null : managedFingerprint(app, originals, rules, provider?.mode === 'api');
+      const written = !!record && (legacy ? bytesMatch : current !== null && hash(current) === record.fingerprint);
+      const state = !record ? 'none' as const : written ? 'written' as const : 'drift' as const;
       const edited = !!record?.definition && !!provider && hash(providerDefinition(provider, rules)) !== record.definition;
       // Judged under its own rule set, an older record is not drift; it only lacks the newer clean-up.
-      const outdated = state === 'written' && !legacy && rules < RULES && current !== managedFingerprint(app, originals);
+      // Only Claude's clean-up grew between rule sets (rule set 3 changes how Pi is judged, not what it clears).
+      const outdated = app === 'claude' && state === 'written' && !legacy && rules < 2 && current !== managedFingerprint(app, originals, 2);
       const warnings: string[] = ['配置写入仅保证文件同步；运行中会话、项目配置与管理员策略可能覆盖选择。'];
       if (unreadable) warnings.push('部分配置无法读取，请检查符号链接、文件类型和目录权限。');
       if (legacy) warnings.push('当前写入记录来自旧版本，按原文逐字节比较；重新应用后改为字段级判定。');
@@ -261,10 +267,12 @@ export class Manager {
       if (app === 'chatgpt') warnings.push('API 模式按 cc-switch 模板写入 model_providers.custom 与 experimental_bearer_token，密钥明文保存在 config.toml；auth.json 只备份不改写，恢复备份会一并恢复当时的登录凭据。');
       return { app, paths, initialized: originals.some(s => s !== null), state, reformatted: state === 'written' && !bytesMatch, edited, warnings };
     }));
+    const piFiles = await Promise.all(this.paths.targets.pi.map(path => readText(path).catch(() => null)));
+    const piRelays = piUsesRelays(piFiles);
     const { list, skipped } = await this.backups();
     const warnings = skipped.length ? [`有 ${skipped.length} 个备份文件无法解析，已跳过：${skipped.join('、')}`] : [];
     const active = Object.fromEntries(Object.entries(hub.active).map(([app, r]) => [app, { providerId: r!.providerId, appliedAt: r!.appliedAt }]));
-    return { providers: hub.providers.map(({ apiKey, ...p }) => ({ ...p, hasKey: !!apiKey })), active, diagnostics, backups: list.map(b => b.info), pending, warnings, home: this.paths.home };
+    return { providers: hub.providers.map(({ apiKey, ...p }) => ({ ...p, hasKey: !!apiKey })), active, diagnostics, backups: list.map(b => b.info), pending, warnings, home: this.paths.home, piRelays };
   }
   snapshot(): Promise<Snapshot> { return this.exclusive((_check, pending) => this.snapshotUnlocked(pending), true); }
   // Saving the provider that is in use also applies it, so an edit never waits for a second action; `activate`
@@ -295,7 +303,9 @@ export class Manager {
       }
       // An edit keeps the provider's place in the list; a new one goes last.
       hub.providers = old ? hub.providers.map(p => p.id === id ? provider : p) : [...hub.providers, provider];
-      check(); await this.writeHub(hub, before);
+      if (provider.app === 'pi' && provider.mode === 'api') await this.registerPi(hub, provider, old, before, check);
+      else if (old?.app === 'pi' && old.mode === 'api') await this.unregisterPi(hub, piId(old), before, check);
+      else { check(); await this.writeHub(hub, before); }
       return { id, snapshot: await this.snapshotUnlocked() };
     });
     const inUse = snapshot.active[input.app]?.providerId === id;
@@ -369,6 +379,44 @@ export class Manager {
       return this.snapshotUnlocked();
     });
   }
+  // IDs of the Pi API providers Mi-Switch has; their entries are Mi-Switch's to write and remove.
+  private piOwned(hub: Hub) { return hub.providers.filter(p => p.app === 'pi' && p.mode === 'api').map(p => piId(p)); }
+  // Registers a Pi API provider in Pi's files (custom-providers.json or models.json, and auth.json) together with the
+  // Hub, in one transaction. The ID must be free in Pi and among Mi-Switch's providers.
+  private async registerPi(hub: Hub, provider: Provider, old: Provider | undefined, beforeHub: string | null, check: () => void) {
+    const id = piId(provider);
+    const previous = old?.app === 'pi' && old.mode === 'api' ? piId(old) : undefined;
+    if (hub.providers.some(p => p.id !== provider.id && p.app === 'pi' && p.mode === 'api' && piId(p) === id)) throw new PublicError('另一个供应商已经使用这个 Pi Provider ID');
+    await this.piTransaction(hub, beforeHub, check, current => {
+      const conflict = piIdConflict(id, current, previous);
+      if (conflict) throw new PublicError(conflict);
+      return registerPiProvider(provider, current, provider.apiKey ?? '', previous);
+    });
+  }
+  private async unregisterPi(hub: Hub, id: string, beforeHub: string | null, check: () => void) {
+    await this.piTransaction(hub, beforeHub, check, current => unregisterPiProvider(id, current));
+  }
+  // Writes Pi's files and the Hub in one transaction. The active record's byte hashes follow our own rewrite of files
+  // it knew, so registering another provider is not reported as a CLI rewrite of the one in use.
+  private async piTransaction(hub: Hub, beforeHub: string | null, check: () => void, change: (current: (string | null)[]) => (string | null)[]) {
+    const paths = this.paths.targets.pi;
+    await withLocks(paths, async targetCheck => {
+      const current = await Promise.all(paths.map(path => readText(path)));
+      const next = change(current);
+      const record = hub.active.pi;
+      if (record) paths.forEach((path, i) => { if (record.hashes[path] === hash(current[i])) record.hashes[path] = hash(next[i]); });
+      const entries = paths.map((path, i) => ({ path, before: current[i], after: next[i] }));
+      entries.push({ path: this.hubPath, before: beforeHub, after: asJson(hub) });
+      await this.transaction('pi', entries, () => { check(); targetCheck(); });
+    });
+  }
+  // Model IDs Pi already knows for one of its providers.
+  async piModels(raw: string): Promise<string[]> {
+    const id = z.string().regex(/^[a-zA-Z0-9_-]+$/).max(100).parse(raw);
+    const originals = await Promise.all(this.paths.targets.pi.map(path => readText(path).catch(() => null)));
+    const store = await readText(this.paths.piModelStore).catch(() => null);
+    return piKnownModels(originals, store, id).slice(0, 500);
+  }
   async remove(id: string): Promise<Snapshot> {
     uuid.parse(id);
     return this.exclusive(async check => {
@@ -376,8 +424,10 @@ export class Manager {
       const hub = await this.readHub();
       if (Object.values(hub.active).some(a => a?.providerId === id)) throw new PublicError('请先切换到另一配置再删除当前配置');
       if (!hub.providers.some(p => p.id === id)) throw new PublicError('配置不存在');
+      const removed = hub.providers.find(p => p.id === id)!;
       hub.providers = hub.providers.filter(p => p.id !== id);
-      check(); await this.writeHub(hub, before);
+      if (removed.app === 'pi' && removed.mode === 'api') await this.unregisterPi(hub, piId(removed), before, check);
+      else { check(); await this.writeHub(hub, before); }
       return this.snapshotUnlocked();
     });
   }
@@ -393,9 +443,9 @@ export class Manager {
         const before = await Promise.all(paths.map(path => readText(path)));
         const key = provider.apiKey;
         if (provider.mode === 'api' && !key) throw new PublicError('API 密钥不可用');
-        const after = patchProvider(provider, before, key);
+        const after = patchProvider(provider, before, key, this.piOwned(hub));
         // Stored as a hash: the fingerprint text contains the key.
-        const fingerprint = managedFingerprint(provider.app, after);
+        const fingerprint = managedFingerprint(provider.app, after, RULES, provider.mode === 'api');
         if (fingerprint === null) throw new PublicError('切换后的配置验证失败');
         hub.active[provider.app] = { providerId: id, appliedAt: new Date().toISOString(), rules: RULES, fingerprint: hash(fingerprint), definition: hash(providerDefinition(provider)), hashes: Object.fromEntries(paths.map((path, i) => [path, hash(after[i])])) };
         const entries = paths.map((path, i) => ({ path, before: before[i], after: after[i] }));
@@ -434,13 +484,17 @@ export class Manager {
       const now = new Date().toISOString();
       const notices: string[] = [];
       let changed = false;
+      // Versions before Pi's multi-provider import read only its default provider; their data is re-read once.
+      const piUpgraded = (hub.upgrades ?? []).includes('pi-providers');
       for (const target of app ? [app] : apps) {
-        if (!app && (hub.imported?.[target] || hub.providers.some(p => p.app === target))) continue;
+        const rescan = !app && target === 'pi' && !piUpgraded && !!hub.imported?.pi;
+        if (!app && !rescan && (hub.imported?.[target] || hub.providers.some(p => p.app === target))) continue;
         const paths = this.paths.targets[target];
         const originals = await Promise.all(paths.map(path => readText(path))).catch(() => null);
         if (!originals) { notices.push(`${labels[target]} 的本机配置无法读取，未导入`); continue; }
         if (originals.every(text => text === null)) { if (app) notices.push(`没有找到 ${labels[target]} 的本机配置`); continue; }
         hub.imported = { ...hub.imported, [target]: now }; changed = true;
+        if (target === 'pi') { await this.importPi(hub, originals, now, notices, app === 'pi'); continue; }
         let input: ProviderInput | null;
         try { input = liveProvider(target, originals); } catch { input = null; }
         if (!input) { notices.push(`${labels[target]} 的本机配置无法表示为配置项（例如未设置模型或使用了环境变量密钥），未导入`); continue; }
@@ -458,10 +512,51 @@ export class Manager {
           }
         } catch { /* Not representable as written (e.g. a Pi provider that no longer exists): imported but not active. */ }
       }
+      if (!piUpgraded && hub.imported?.pi) { hub.upgrades = [...(hub.upgrades ?? []), 'pi-providers']; changed = true; }
       if (changed) { check(); await this.writeHub(hub, before); }
       const snapshot = await this.snapshotUnlocked();
       return { ...snapshot, warnings: [...notices, ...snapshot.warnings] };
     }, true);
+  }
+  // Pi: every provider its files define becomes an existing provider. A later run (the re-read button) adds the ones
+  // not in Mi-Switch yet and refreshes what is shown for the ones already there (address, protocol, credential source,
+  // and names in the older "name（id）" form). The default provider is marked in use when nothing is.
+  private async importPi(hub: Hub, originals: (string | null)[], now: string, notices: string[], explicit: boolean) {
+    const store = await readText(this.paths.piModelStore).catch(() => null);
+    let live: ProviderInput[];
+    try { live = livePiProviders(originals, store); } catch { notices.push('Pi 的配置文件无法解析，未读取供应商'); return; }
+    const record = hub.active.pi;
+    hub.providers = hub.providers.map(p => {
+      const found = p.app === 'pi' && p.mode === 'login' ? live.find(l => l.loginProvider === p.loginProvider) : undefined;
+      if (!found) return p;
+      const name = new RegExp(`^.+（${p.loginProvider}）$`).test(p.name) ? p.loginProvider : p.name;
+      const updated: Provider = { ...p, name, baseUrl: found.baseUrl ?? '', protocol: found.protocol, piAuth: found.piAuth };
+      // Display fields only; an older rule set that hashed them follows along, as for any display-only save.
+      if (record?.providerId === p.id && record.definition === hash(providerDefinition(p, record.rules ?? 1))) record.definition = hash(providerDefinition(updated, record.rules ?? 1));
+      return updated;
+    });
+    const known = hub.providers.filter(p => p.app === 'pi').map(p => piId(p));
+    let added = 0;
+    for (const input of live.filter(l => !known.includes(l.loginProvider!))) {
+      const parsed = providerSchema.safeParse(input);
+      if (!parsed.success) { notices.push(`Pi 的 Provider “${input.loginProvider}”未导入：${publicError(parsed.error)}`); continue; }
+      const { apiKey: _unused, ...rest } = parsed.data;
+      hub.providers.push({ ...rest, id: randomUUID(), apiKey: undefined, updatedAt: now });
+      added++;
+    }
+    // The automatic first import is silent; the re-read button reports what it found.
+    if (explicit) notices.push(!live.length ? 'Pi 的配置文件中没有找到任何 Provider' : added ? `已从 Pi 读取 ${added} 个新的 Provider` : 'Pi 中没有新的 Provider');
+    if (hub.active.pi) return;
+    const settings = (() => { try { return jsonObject(originals[2]); } catch { return {}; } })();
+    const selected = hub.providers.find(p => p.app === 'pi' && p.mode === 'login' && p.loginProvider === settings.defaultProvider);
+    if (!selected) return;
+    try {
+      const current = managedFingerprint('pi', originals);
+      const after = patchProvider(selected, originals);
+      if (current !== null && managedFingerprint('pi', after) === current) {
+        hub.active.pi = { providerId: selected.id, appliedAt: now, rules: RULES, fingerprint: hash(current), definition: hash(providerDefinition(selected)), hashes: Object.fromEntries(this.paths.targets.pi.map((path, i) => [path, hash(originals[i])])) };
+      }
+    } catch { /* A provider Pi no longer defines: listed but not in use. */ }
   }
   // Lists the provider's models. Without a typed key, an existing provider's saved key is used; the Hub lock is
   // released before the network request so a slow endpoint never blocks other operations.

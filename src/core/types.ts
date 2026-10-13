@@ -27,10 +27,15 @@ export const providerSchema = z.object({
   name: z.string().trim().min(1).max(100),
   mode: z.enum(['api', 'login']),
   baseUrl: z.string().trim().max(2048).default(''),
-  model: z.string().trim().min(1).max(200),
+  // Required, except for an existing Pi provider: empty there leaves the model to Pi (no defaultModel).
+  model: z.string().trim().max(200),
   protocol: protocolSchema,
   claudeAuth: z.enum(['api-key', 'bearer']).default('api-key'),
   loginProvider: z.string().regex(/^[a-zA-Z0-9_-]+$/).max(100).default('anthropic'),
+  // Pi API mode only: the provider ID written into Pi's files. Unset means the older `miswitch_<id>` name.
+  piProviderId: z.string().regex(/^[a-zA-Z0-9_-]+$/).max(64).optional(),
+  // Display only, recorded on import: where Pi finds this existing provider's credentials.
+  piAuth: z.enum(['oauth', 'api_key', 'models', 'none']).optional(),
   notes: z.string().max(2000).default(''),
   // Display only: never written to a target file and not part of what a switch compares.
   icon: z.enum(providerIcons).optional(),
@@ -56,6 +61,9 @@ export const providerSchema = z.object({
   }
   if ([p.smallFastModel, p.sonnetModel, p.opusModel, p.fableModel].some(m => m !== undefined) && (p.app !== 'claude' || p.mode !== 'api')) issue('模型别名映射仅适用于 Claude Code 的 API 模式');
   if (p.reasoningEffort !== undefined && p.app !== 'chatgpt') issue('推理强度仅适用于 Codex');
+  if (!p.model && !(p.app === 'pi' && p.mode === 'login')) issue('请填写模型');
+  if (p.piProviderId !== undefined && !(p.app === 'pi' && p.mode === 'api')) issue('Pi Provider ID 仅适用于 Pi 的 API 模式');
+  if (p.piProviderId !== undefined && /^miswitch_/.test(p.piProviderId)) issue('Pi Provider ID 不能以 miswitch_ 开头');
   if (p.app !== 'chatgpt' && (p.contextWindow !== undefined || p.autoCompactTokenLimit !== undefined)) issue('上下文窗口与自动压缩阈值仅适用于 Codex');
   if (p.contextWindow !== undefined && p.autoCompactTokenLimit !== undefined && p.autoCompactTokenLimit > p.contextWindow) issue('自动压缩阈值不能大于上下文窗口');
 });
@@ -67,7 +75,8 @@ export type PublicProvider = Omit<Provider, 'apiKey'> & { hasKey: boolean };
 // `rules` is the managed-field rule set both hashes were computed with; absent means rule set 1.
 export type ActiveRecord = { providerId: string; appliedAt: string; rules?: number; fingerprint?: string; definition?: string; hashes: Record<string, string> };
 // `imported` records when each app's local configuration was imported, so the automatic import runs once.
-export type Hub = { version: 1; providers: Provider[]; active: Partial<Record<AppId, ActiveRecord>>; imported?: Partial<Record<AppId, string>> };
+// `upgrades` names one-time data upgrades already done (e.g. `pi-providers`: Pi re-read once for its multiple providers).
+export type Hub = { version: 1; providers: Provider[]; active: Partial<Record<AppId, ActiveRecord>>; imported?: Partial<Record<AppId, string>>; upgrades?: string[] };
 // written: managed fields still equal the last write. reformatted: bytes differ but managed fields do not.
 // edited: the active provider was edited after it was written, so the target still holds the old settings.
 export type Diagnosis = { app: AppId; paths: string[]; initialized: boolean; state: 'none' | 'written' | 'drift'; reformatted: boolean; edited: boolean; warnings: string[] };
@@ -77,7 +86,8 @@ export type BackupInfo = { id: string; app: AppId; createdAt: string; sequence?:
 // A journal whose target files were changed by someone else. `valid` is false when pending.json itself cannot be parsed.
 export type PendingInfo = { id: string; app: AppId | null; createdAt: string | null; paths: string[]; conflicts: string[]; valid: boolean };
 // The renderer only needs which provider is active; the hashes stay in the main process.
-export type Snapshot = { providers: PublicProvider[]; active: Partial<Record<AppId, Pick<ActiveRecord, 'providerId' | 'appliedAt'>>>; diagnostics: Diagnosis[]; backups: BackupInfo[]; pending: PendingInfo | null; warnings: string[]; home: string };
+// `piRelays`: Pi uses the pi-custom-providers extension, so new Pi providers are written to custom-providers.json.
+export type Snapshot = { providers: PublicProvider[]; active: Partial<Record<AppId, Pick<ActiveRecord, 'providerId' | 'appliedAt'>>>; diagnostics: Diagnosis[]; backups: BackupInfo[]; pending: PendingInfo | null; warnings: string[]; home: string; piRelays: boolean };
 // Fetches the provider's model IDs. An empty apiKey with providerId uses that provider's saved key.
 export const modelListRequestSchema = z.object({
   app: appSchema, baseUrl: z.string().trim().max(2048), protocol: protocolSchema,
@@ -90,7 +100,7 @@ export type ModelList = { models: string[]; url: string };
 const draftText = z.string().max(8192).optional();
 export const configDraftSchema = z.object({
   name: draftText, mode: z.enum(['api', 'login']).optional(), baseUrl: draftText, apiKey: draftText, claudeAuth: z.enum(['api-key', 'bearer']).optional(),
-  loginProvider: draftText, model: draftText, smallFastModel: draftText, sonnetModel: draftText, opusModel: draftText, fableModel: draftText,
+  loginProvider: draftText, piProviderId: draftText, model: draftText, smallFastModel: draftText, sonnetModel: draftText, opusModel: draftText, fableModel: draftText,
   contextWindow: draftText, autoCompactTokenLimit: draftText, reasoningEffort: draftText
 }).strict();
 export type ConfigDraft = z.infer<typeof configDraftSchema>;
@@ -109,6 +119,8 @@ export interface Bridge {
   resolveJournal(id: string): Promise<Snapshot>;
   importLive(app?: AppId): Promise<Snapshot>;
   listModels(request: ModelListRequest): Promise<ModelList>;
+  // Model IDs Pi already knows for one of its providers (models.json and the extension's model cache).
+  piModels(id: string): Promise<string[]>;
   configView(request: ConfigViewRequest): Promise<ConfigView>;
   globalView(app: AppId): Promise<ConfigView>;
   saveGlobal(request: GlobalEdit): Promise<Snapshot>;

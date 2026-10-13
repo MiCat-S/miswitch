@@ -10,10 +10,18 @@ declare global { interface Window { miswitch?: Bridge } }
 type Page = 'providers' | 'backups' | 'global';
 type Filter = 'all' | 'api' | 'login';
 type Tone = 'ok' | 'warn' | 'idle';
+// The re-read's own report (how many Pi providers it found), shown once as a notice.
+const piNotice = (w: string) => /^(已从 Pi 读取|Pi 中没有新的|Pi 的配置文件中没有找到)/.test(w);
 const apps: AppId[] = ['claude', 'chatgpt', 'pi'];
 const loginLabel = (app: AppId) => app === 'pi' ? '已有 Provider' : '官方登录';
 const tokens = (n: number) => n >= 1e6 && n % 1e5 === 0 ? `${n / 1e6}M` : n >= 1e3 && n % 1e3 === 0 ? `${n / 1e3}K` : n.toLocaleString();
-const endpoint = (p: PublicProvider) => p.mode === 'api' ? p.baseUrl.replace(/^https?:\/\//, '') : p.app === 'pi' ? `沿用 Pi Provider：${p.loginProvider}` : `使用 ${labels[p.app]} 自己的登录`;
+const bare = (url: string) => url.replace(/^https?:\/\//, '');
+// Pi's existing providers show the address Pi has for them, or that they are one of Pi's built-in providers.
+const endpoint = (p: PublicProvider) => p.mode === 'api' ? bare(p.baseUrl)
+  : p.app === 'pi' ? (p.baseUrl ? bare(p.baseUrl) : `Pi 内置 Provider：${p.loginProvider}`) : `使用 ${labels[p.app]} 自己的登录`;
+const piId = (p: PublicProvider) => p.mode === 'login' ? p.loginProvider : p.piProviderId ?? `miswitch_${p.id.replaceAll('-', '')}`;
+const piAuthText: Record<NonNullable<PublicProvider['piAuth']>, string> = { oauth: 'Pi 登录（auth.json，OAuth）', api_key: 'Pi 保存的 Key（auth.json）', models: 'models.json 中的 apiKey', none: '环境变量或 Pi 内置方式' };
+const modelText = (p: PublicProvider) => p.model || '由 Pi 自动选择';
 const aliases = (p: PublicProvider) => ([['Haiku', p.smallFastModel], ['Sonnet', p.sonnetModel], ['Opus', p.opusModel], ['Fable', p.fableModel]] as const)
   .filter(([, model]) => model).map(([alias, model]) => `${alias} ${model}`);
 const extras = (p: PublicProvider) => [p.contextWindow ? `上下文 ${tokens(p.contextWindow)}` : '', p.reasoningEffort ? `推理 ${p.reasoningEffort}` : ''].filter(Boolean);
@@ -51,10 +59,12 @@ function Summary({ app, provider, diagnosis, home, blocked, onEdit, onReapply }:
       {!provider && diagnosis ? <p className="hint">{diagnosis.initialized ? '在下方选一个供应商点 ▶ 使用，Mi-Switch 会先备份原文件再写入。' : '添加供应商并使用后，会自动创建所需的配置文件。'}</p> : null}
       <dl>
         {provider ? <>
-          <dt>端点</dt><dd className={provider.mode === 'api' ? 'mono' : undefined}>{provider.mode === 'api' ? provider.baseUrl : endpoint(provider)}</dd>
-          <dt>模型</dt><dd><span className="mono">{provider.model}</span>{extras(provider).length ? ` · ${extras(provider).join(' · ')}` : ''}</dd>
+          <dt>端点</dt><dd className={provider.mode === 'api' || (provider.app === 'pi' && provider.baseUrl) ? 'mono' : undefined}>{provider.mode === 'api' || (provider.app === 'pi' && provider.baseUrl) ? provider.baseUrl : endpoint(provider)}</dd>
+          {provider.app === 'pi' ? <><dt>Pi ID</dt><dd className="mono">{piId(provider)}</dd></> : null}
+          <dt>模型</dt><dd>{provider.model ? <span className="mono">{provider.model}</span> : modelText(provider)}{extras(provider).length ? ` · ${extras(provider).join(' · ')}` : ''}</dd>
           {routes.length ? <><dt>别名</dt><dd className="mono">{routes.join(' · ')}</dd></> : null}
-          {provider.mode === 'api' ? <><dt>密钥</dt><dd>{provider.hasKey ? '已保存（不在界面中显示）' : '未保存'}</dd></> : null}
+          {provider.mode === 'api' ? <><dt>密钥</dt><dd>{provider.hasKey ? '已保存（不在界面中显示）' : '未保存'}</dd></>
+            : provider.app === 'pi' && provider.piAuth ? <><dt>密钥</dt><dd>{piAuthText[provider.piAuth]}</dd></> : null}
         </> : null}
         {files ? <><dt>文件</dt><dd className="mono files">{files}</dd></> : null}
       </dl>
@@ -72,7 +82,7 @@ function ProviderCard({ p, inUse, tone, blocked, onUse, onEdit }: { p: PublicPro
       <p className={`sub ${p.mode === 'api' ? 'mono' : ''}`} title={p.mode === 'api' ? p.baseUrl : undefined}>{endpoint(p)}</p>
     </div>
     <div className="card-model">
-      <span className="mono">{p.model}</span>
+      {p.model ? <span className="mono">{p.model}</span> : <span>{modelText(p)}</span>}
       {meta ? <small title={routes.join('\n') || undefined}>{meta}</small> : null}
     </div>
     <div className="card-actions">
@@ -123,6 +133,7 @@ export function App() {
   // Background refreshes are numbered so an older answer never replaces the result of a later action.
   const sequence = useRef(0);
   const busyRef = useRef(false);
+  const lastPiNotice = useRef('');
   // A change reported while an action runs (from the menu bar or the window regaining focus) is read afterwards.
   const missed = useRef(false);
   const refresh = () => {
@@ -145,13 +156,14 @@ export function App() {
   }, [bridge]);
   // Notices confirm a finished action; they leave on their own and never push the content around.
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 5000); return () => clearTimeout(timer); }, [notice]);
-  const act = async (operation: () => Promise<Snapshot>, message: string, done?: () => void) => {
+  const act = async (operation: () => Promise<Snapshot>, message: string | ((s: Snapshot) => string), done?: () => void) => {
     if (busyRef.current) return false;
     busyRef.current = true; setBusy(true); setError(''); setNotice('');
     try {
       const next = await operation();
       sequence.current++; setSnapshot(next); setLoadFailed(false); setConfirmation(undefined);
-      if (message) setNotice(message);
+      const text = typeof message === 'string' ? message : message(next);
+      if (text) setNotice(text);
       done?.();
       return true;
     } catch (e) {
@@ -184,7 +196,9 @@ export function App() {
   const edit = (provider?: PublicProvider) => { setError(''); setEditor({ provider }); };
   const save = (input: ProviderInput, { activate }: { activate: boolean }) => {
     const applies = activate || (!!input.id && input.id === selected);
-    void act(() => bridge!.save(input, { activate }), applies ? `已保存「${input.name}」并写入配置文件，新会话生效` : `已保存「${input.name}」，点 ▶ 使用后才会写入配置文件`, () => setEditor(undefined));
+    const registered = input.app === 'pi' && input.mode === 'api';
+    void act(() => bridge!.save(input, { activate }), applies ? `已保存「${input.name}」并写入配置文件，新会话生效`
+      : registered ? `已保存「${input.name}」并登记到 Pi，可在 Pi 的 /model 中选择；点 ▶ 设为默认` : `已保存「${input.name}」，点 ▶ 使用后才会写入配置文件`, () => setEditor(undefined));
   };
   const navLocked = busy || !!editor || !!confirmation;
   const navStatus = (id: AppId) => {
@@ -217,8 +231,12 @@ export function App() {
     onSave={request => act(() => bridge!.saveGlobal(request), '')} />;
   else if (editor) content = <ProviderEditor key={editor.provider?.id ?? `new-${app}`} app={app} provider={editor.provider} inUse={!!editor.provider && editor.provider.id === selected}
     busy={busy} error={error} onCancel={() => { setEditor(undefined); setError(''); }} onSave={save}
-    onRemove={() => { const p = editor.provider!; setConfirmation({ title: '删除供应商', action: '删除', danger: true, body: `删除「${p.name}」？这只删除 Mi-Switch 中保存的供应商，不改动任何配置文件；历史备份会保留。`,
+    onRemove={() => { const p = editor.provider!; setConfirmation({ title: '删除供应商', action: '删除', danger: true,
+      body: p.app === 'pi' && p.mode === 'api' ? `删除「${p.name}」？它在 Pi 中登记的 Provider “${piId(p)}” 会一并移除（custom-providers.json 或 models.json，以及 auth.json），删除前先备份。`
+        : p.app === 'pi' ? `从 Mi-Switch 中移除「${p.name}」？Pi 中的这个 Provider 不受影响；之后“从 Pi 重新读取”会再次列出它。`
+        : `删除「${p.name}」？这只删除 Mi-Switch 中保存的供应商，不改动任何配置文件；历史备份会保留。`,
       execute: () => void act(() => bridge!.remove(p.id), `已删除「${p.name}」`, () => setEditor(undefined)) }); }}
+    piRelays={snapshot?.piRelays ?? false} piModels={id => bridge!.piModels(id)}
     listModels={request => bridge!.listModels(request)} configView={request => bridge!.configView(request)} />;
   else content = <div className="page">
     <div className="page-bar">
@@ -240,6 +258,12 @@ export function App() {
             </div> : null}
             <span className="grow" />
             {providers.length ? <span className="hint">点 <Glyph name="play" /> 切换，新会话生效</span> : null}
+            {app === 'pi' ? <button className="link" disabled={blocked} onClick={() => void act(async () => {
+              // The import's report is shown as a notice, not kept as a banner.
+              const s = await bridge!.importLive('pi');
+              lastPiNotice.current = s.warnings.find(piNotice) ?? '';
+              return { ...s, warnings: s.warnings.filter(w => !piNotice(w)) };
+            }, () => lastPiNotice.current)}>从 Pi 重新读取</button> : null}
           </div>
           {providers.length ? <ul className="cards" aria-label="供应商列表">
             {shown.map(p => <ProviderCard key={p.id} p={p} inUse={p.id === selected} tone={tone} blocked={blocked} onUse={() => use(p)} onEdit={() => edit(p)} />)}

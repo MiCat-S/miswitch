@@ -38,7 +38,7 @@ else {
       importLive: (app?: AppId) => manager.importLive(app),
       // Chromium's network stack honours the system proxy, which some vendor endpoints need.
       listModels: (request: ModelListRequest) => manager.listModels(request, (url, init) => net.fetch(url, init)),
-      configView: (request: ConfigViewRequest) => manager.configView(request),
+      configView: (request: ConfigViewRequest) => manager.configView(request), piModels: (id: string) => manager.piModels(id),
       globalView: (app: AppId) => manager.globalView(app), saveGlobal: (request: GlobalEdit) => manager.saveGlobal(request)
     };
     // Calls that can change which provider is in use; the menu bar is rebuilt after each of them.

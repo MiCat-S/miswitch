@@ -74,7 +74,8 @@ app.on('browser-window-created', (_event, window) => {
         set(field('baseUrl'), 'https://unsaved.test'); set(field('apiKey'), 'sk-unsaved-draft');
         const mode = document.querySelector('form.editor .panel select');
         set(mode, 'login'); await tick();
-        const hiddenWhileLogin = field('baseUrl').closest('fieldset').hidden && field('smallFastModel').closest('fieldset').hidden;
+        // Hidden on screen, not just marked hidden: a later CSS display rule once kept the API fields visible.
+        const hiddenWhileLogin = ['baseUrl', 'apiKey', 'smallFastModel'].every(name => field(name).closest('fieldset').hidden && !field(name).getClientRects().length);
         set(mode, 'api'); await tick();
         const result = { hiddenWhileLogin, url: field('baseUrl').value, keyLength: field('apiKey').value.length, small: field('smallFastModel').value, footer: [...document.querySelectorAll('.page-footer button')].map(b => b.textContent) };
         click('.page-footer button', '取消'); await until(() => document.querySelector('.summary'));

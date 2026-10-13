@@ -9,6 +9,7 @@ const bridge: Bridge = {
   resolveJournal: id => ipcRenderer.invoke('miswitch:resolveJournal', id),
   importLive: app => ipcRenderer.invoke('miswitch:importLive', app),
   listModels: request => ipcRenderer.invoke('miswitch:listModels', request),
+  piModels: id => ipcRenderer.invoke('miswitch:piModels', id),
   configView: request => ipcRenderer.invoke('miswitch:configView', request),
   globalView: app => ipcRenderer.invoke('miswitch:globalView', app),
   saveGlobal: request => ipcRenderer.invoke('miswitch:saveGlobal', request),

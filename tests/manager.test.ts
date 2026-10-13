@@ -102,7 +102,9 @@ test('Pi writes all three official files and preserves unrelated OAuth/settings'
     assert.equal(a.anthropic.refresh, 'fake-refresh');
     const login = await add(f.manager, { ...input('pi', 'Login'), mode: 'login', apiKey: undefined, loginProvider: 'anthropic' });
     await f.manager.activate(login.id);
-    assert.deepEqual(JSON.parse((await readText(auth))!), { anthropic: a.anthropic });
+    // Pi keeps several providers at once: switching away leaves the API provider registered, only the selection moves.
+    const apiId = s.defaultProvider;
+    assert.deepEqual(JSON.parse((await readText(auth))!), { anthropic: a.anthropic, [apiId]: a[apiId] });
     assert.equal(JSON.parse((await readText(settings))!).defaultProvider, 'anthropic');
   } finally { await f.cleanup(); }
 });
@@ -136,11 +138,12 @@ test('restore recreates exact original bytes, backs up current state and clears 
     assert.equal(await readText(path), original); assert.equal(restored.active.claude, undefined); assert.equal(restored.backups.length, 2);
   } finally { await f.cleanup(); }
 });
-test('restore of uninitialized configuration removes only files created by switch', async () => {
+test('restore of uninitialized configuration removes only files created by Mi-Switch', async () => {
   const f = await fixture();
   try {
     const p = await add(f.manager, input('pi')); const s = await f.manager.activate(p.id);
-    await f.manager.restore(s.backups[0].id);
+    // The oldest backup is the one taken before the provider was first registered in Pi.
+    await f.manager.restore(s.backups.at(-1)!.id);
     for (const path of f.paths.targets.pi) assert.equal(await readText(path), null);
   } finally { await f.cleanup(); }
 });
@@ -289,7 +292,7 @@ test('the first import adopts each CLI configuration as its active provider with
     const byApp = (app: AppId) => s.providers.filter(p => p.app === app);
     assert.deepEqual(byApp('claude').map(p => [p.name, p.mode, p.model]), [['Claude 官方登录', 'login', 'opus']]);
     assert.deepEqual(byApp('chatgpt').map(p => [p.name, p.mode, p.baseUrl, p.model, p.contextWindow, p.autoCompactTokenLimit, p.hasKey]), [['OpenAI', 'api', 'https://gateway.example/v1', 'gateway-model', 1000000, 900000, true]]);
-    assert.deepEqual(byApp('pi').map(p => [p.name, p.mode, p.loginProvider, p.model]), [['opencode（mi）', 'login', 'mi', 'pi-model']]);
+    assert.deepEqual(byApp('pi').map(p => [p.name, p.mode, p.loginProvider, p.model, p.baseUrl, p.protocol, p.piAuth]), [['mi', 'login', 'mi', 'pi-model', 'https://gateway.example/v1', 'openai-responses', 'api_key']]);
     for (const d of s.diagnostics) {
       assert.equal(s.active[d.app]?.providerId, byApp(d.app)[0].id); assert.equal(d.state, 'written'); assert.equal(d.edited, false); assert.equal(d.reformatted, false);
     }
@@ -445,7 +448,8 @@ test('backup retention is per app and keeps the newest distinct states', async (
     for (let i = 0; i < 5; i++) await f.manager.activate((i % 2 ? q : p).id);
     const s = await f.manager.snapshot();
     const claude = s.backups.filter(b => b.app === 'claude');
-    assert.equal(claude.length, 2); assert.equal(s.backups.filter(b => b.app === 'pi').length, 1);
+    // Pi: one backup when the provider was registered, one for the switch.
+    assert.equal(claude.length, 2); assert.equal(s.backups.filter(b => b.app === 'pi').length, 2);
     const befores = await Promise.all(claude.map(async b => JSON.parse(JSON.parse(await readFile(join(f.paths.data, 'backups', `${b.id}.json`), 'utf8')).entries[0].before).model));
     assert.deepEqual(befores, ['other-model', 'test-model']);
   } finally { await f.cleanup(); }
@@ -454,8 +458,9 @@ test('second-file failure rolls Pi and Hub back, with no success indicator', asy
   let calls = 0;
   const f = await fixture(10, async (...args) => { if (++calls === 2) throw new Error('simulated disk full'); return replaceText(...args); });
   try {
-    const p = await add(f.manager, input('pi')); const beforeHub = await readText(join(f.paths.data, 'hub.json'));
-    await assert.rejects(() => f.manager.activate(p.id), /simulated/);
+    // Registering a Pi provider writes models.json first, then auth.json, which fails: both files and the Hub roll back.
+    const beforeHub = await readText(join(f.paths.data, 'hub.json'));
+    await assert.rejects(() => f.manager.save(input('pi')), /simulated/);
     for (const path of f.paths.targets.pi) assert.equal(await readText(path), null);
     assert.equal(await readText(join(f.paths.data, 'hub.json')), beforeHub);
     assert.equal(await readText(join(f.paths.data, 'pending.json')), null);
@@ -643,8 +648,9 @@ test('Pi activation respects the official auth storage lock convention', async (
   const f = await fixture();
   try {
     const p = await add(f.manager, input('pi'));
+    const registered = await Promise.all(f.paths.targets.pi.map(path => readText(path)));
     await withLocks([f.paths.targets.pi[1]], async () => { await assert.rejects(() => f.manager.activate(p.id), (error: any) => error.code === 'ELOCKED'); });
-    for (const path of f.paths.targets.pi) assert.equal(await readText(path), null);
+    assert.deepEqual(await Promise.all(f.paths.targets.pi.map(path => readText(path))), registered);
   } finally { await f.cleanup(); }
 });
 test('directory overrides use platform home or explicit absolute paths', () => {

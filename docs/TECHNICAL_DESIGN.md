@@ -1,8 +1,8 @@
 # Mi-Switch 技术方案与核心实现
 
-> 应用显示名称为 Mi-Switch；仓库、内部标识与 Pi 的 `miswitch_` Provider 前缀保持 `miswitch` 不变。设置数据沿用旧版的位置（`app.setPath('userData', …)`）：打包版用过 `appData/MiSwitch`，开发版用过包名 `appData/miswitch`。在区分大小写的卷上这是两个文件夹，启动时选已有 `store/hub.json` 的那个（先 `MiSwitch`），都没有时用 `MiSwitch`；不移动任何数据。所以改名前后读取同一份 Hub 与备份。
+> 应用显示名称为 Mi-Switch；仓库、内部标识与旧版 Pi Provider 的 `miswitch_` 前缀保持 `miswitch` 不变。设置数据沿用旧版的位置（`app.setPath('userData', …)`）：打包版用过 `appData/MiSwitch`，开发版用过包名 `appData/miswitch`。在区分大小写的卷上这是两个文件夹，启动时选已有 `store/hub.json` 的那个（先 `MiSwitch`），都没有时用 `MiSwitch`；不移动任何数据。所以改名前后读取同一份 Hub 与备份。
 
-配置规范核对日期：**2026-10-12，Asia/Taipei**。这是已可运行的桌面核心实现，交付内容包括前后端、锁定的依赖、测试和构建脚本。按需求将应用范围限制为 Claude、ChatGPT、Pi 三个标签。
+配置规范核对日期：**2026-10-12，Asia/Taipei**；Pi 部分于 2026-10-13 按 Pi 1.0.4 与 pi-custom-providers 0.4.3 复核。这是已可运行的桌面核心实现，交付内容包括前后端、锁定的依赖、测试和构建脚本。按需求将应用范围限制为 Claude、ChatGPT、Pi 三个标签。
 
 ## 1. 架构与数据结构设计
 
@@ -116,16 +116,19 @@ scripts/
 | `name` | 非空，最大 100 字符 | 展示名称 |
 | `baseUrl` | API 模式必需 | HTTPS；仅本机 loopback 允许 HTTP；不含账号、query、fragment |
 | `apiKey` | API 模式必需 | 明文字面密钥；不得含空白或 `!`、`$` 起始的命令/环境表达式 |
-| `model` | 非空，最大 200 字符 | 用户提供精确模型 ID；不猜测“最新模型” |
+| `model` | 非空，最大 200 字符；Pi“沿用已有 Provider”可留空 | 用户提供精确模型 ID；不猜测“最新模型”。Pi 留空时切换会删除 `defaultModel`，由 Pi 自动选择 |
 | `protocol` | 三种协议枚举 | Claude/Codex 再做应用级约束 |
 | `claudeAuth` | `api-key / bearer` | Anthropic 官方 API 与 Bearer 网关区分 |
-| `loginProvider` | Pi 登录模式使用 | Pi 中已有的 Provider ID：`auth.json` 中的条目（OAuth 或 API Key）或 `models.json` 中定义的 Provider |
+| `loginProvider` | Pi 登录模式使用 | Pi 中已有的 Provider ID：`auth.json` 中的条目（OAuth 或 API Key），或 `models.json`、`custom-providers.json` 中定义的 Provider |
+| `piProviderId` | 可选，`[A-Za-z0-9_-]`，最大 64 字符，仅 Pi API 模式 | 登记到 Pi 时使用的 Provider ID；不得以 `miswitch_` 开头，不得与 Pi 内置或用户已有的 Provider 重名。旧版没有此字段，沿用 `miswitch_` + UUID |
+| `piAuth` | 可选，`oauth / api_key / models / none`，仅显示 | 导入时记录该 Pi Provider 的密钥来源，只用于界面说明，不进入任何目标文件 |
 | `notes` | 最大 2000 字符 | 用户备注 |
 | `smallFastModel` / `sonnetModel` / `opusModel` / `fableModel` | 可选，最大 200 字符，仅 Claude API 模式 | 写入 `ANTHROPIC_DEFAULT_{HAIKU,SONNET,OPUS,FABLE}_MODEL`；haiku 路由同时是后台任务使用的模型。留空不写，切换时一律先清除 |
 | `reasoningEffort` | 可选，`minimal / low / medium / high / xhigh`，仅 Codex | 设置时写入 `model_reasoning_effort`；不清除、不计入漂移判定，Codex 自己改写它属于用户选择 |
 | `contextWindow` / `autoCompactTokenLimit` | 可选正整数，仅 Codex | 写入 `model_context_window` / `model_auto_compact_token_limit` |
 | `updatedAt` / `appliedAt` | UTC ISO8601 | UI 按用户本地时区显示 |
 | `imported` | 应用 → UTC ISO8601，可选 | 各应用本机配置的自动导入时间；有记录的应用不再自动导入 |
+| `upgrades` | 字符串数组，可选，最多 32 项 | 已完成的一次性数据升级。`pi-providers`：旧版只导入了 Pi 的默认 Provider，新版启动时重新读取一次 Pi 后记录 |
 | `active.*.rules` | 正整数，可选 | 计算 `fingerprint` 与 `definition` 时使用的管理字段规则集；缺省为规则集 1（`722c119` 及之前） |
 | `active.*.fingerprint` | SHA-256 | 本工具管理字段的规范化 JSON 摘要；状态判定以此为准，CLI 自行重排文件不算漂移 |
 | `active.*.hashes` | 路径 → SHA-256 | 上次写入的精确字节；仅用于提示“文件已被重排” |
@@ -133,15 +136,15 @@ scripts/
 
 向前端返回 `PublicProvider` 时剔除 `apiKey`，只返回 `hasKey`；`active` 只返回 `providerId` 与 `appliedAt`，各种摘要留在主进程。编辑框留空保留旧密钥；已保存的密钥不会自动填回 renderer。保存正在使用的 Provider 时，若会进入目标文件的字段有变化，`save()` 在同一操作中接着执行切换，文件立即更新；`save(input, { activate: true })`（界面的“保存并使用”）对任何 Provider 都这样做。切换失败时 Provider 已经保存，错误以“供应商已保存，但没有写入配置文件：”开头，界面据此关闭编辑页，避免重复保存出第二个 Provider；此时 `active` 记录保留，目标文件里仍是之前写入的设置，所以它仍然不能删除。状态检测比较 `definition` 与当前 Provider，有差异时摘要显示“配置文件仍是编辑前的版本”并提供“重新应用”，改回原值后提示自动消失。编辑保留 Provider 在列表中的位置，新增的排在最后。`definition` 只投影该应用与模式下 Adapter 实际写入的字段：Claude 为模型，API 模式另加 Base URL、密钥、鉴权头与四个别名路由；Codex 为模型、两个上下文键与推理强度，API 模式另加名称、Base URL 与密钥；Pi 为模型，API 模式另加 Provider ID、Base URL、协议与密钥，登录模式另加登录 Provider ID。因此只改备注、名称（Codex API 模式除外）或当前模式不使用的字段都不算编辑。`37e2673` 写入的记录没有 `definition`，那时编辑会清除记录，所以现存记录对应的必然是未编辑的 Provider，第一次编辑时用编辑前的 Provider 按记录自己的规则集补写。
 
-**规则集。** 管理字段的范围可能随版本扩大（规则集 2 新增清理 fable 与旧 small/fast 路由，并改用上述投影）。每条 `active` 记录保存自己的 `rules`，状态检测与编辑判定都按该规则集计算，所以单纯升级不会把未改动的文件报成外部修改。旧规则集记录若在文件中仍有新规则集会清理的键，诊断提示“重新应用后按新规则清理”；重新应用后记录改用当前规则集。保存时，是否需要写入目标文件按当前规则集的投影比较修改前后的 Provider：没有变化（例如规则集 1 的 Codex 登录记录只改了名称）时，不切换，只把记录的 `definition` 按它自己的规则集更新为修改后的 Provider，因此不会被报告为“已编辑”，也不会改写文件。
+**规则集。** 管理字段的范围可能随版本扩大（规则集 2 新增清理 fable 与旧 small/fast 路由，并改用上述投影；规则集 3 只改变 Pi，见下文“Pi Coding Agent”）。每条 `active` 记录保存自己的 `rules`，状态检测与编辑判定都按该规则集计算，所以单纯升级不会把未改动的文件报成外部修改。旧规则集记录若在文件中仍有新规则集会清理的键，诊断提示“重新应用后按新规则清理”；重新应用后记录改用当前规则集。保存时，是否需要写入目标文件按当前规则集的投影比较修改前后的 Provider：没有变化（例如规则集 1 的 Codex 登录记录只改了名称）时，不切换，只把记录的 `definition` 按它自己的规则集更新为修改后的 Provider，因此不会被报告为“已编辑”，也不会改写文件。
 
-**首次导入。** `importLive()` 是 `patchProvider()` 的逆向：读取各应用当前目标文件，生成一组 Provider 输入，再走同一 Schema 校验。没有参数时，只对没有 Provider、且 Hub 中没有 `imported` 记录的应用执行，界面首次载入时调用；指定应用时由空列表的“从本机配置文件导入”按钮触发，忽略记录。只要找到目标文件就写入 `imported`，所以删除导入的配置后不会再自动导入；完全没有配置文件的应用不记录，之后出现配置仍会导入。目标文件只读不写。
+**首次导入。** `importLive()` 是 `patchProvider()` 的逆向：读取各应用当前目标文件，生成一组 Provider 输入，再走同一 Schema 校验。没有参数时，只对没有 Provider、且 Hub 中没有 `imported` 记录的应用执行，界面首次载入时调用；例外是 Pi：Hub 有 Pi 的 `imported` 记录但没有 `upgrades` 中的 `pi-providers` 时，重新读取一次 Pi（不显示提示），之后记录 `pi-providers`；指定应用时由空列表的“从本机配置文件导入”按钮触发，忽略记录。只要找到目标文件就写入 `imported`，所以删除导入的配置后不会再自动导入；完全没有配置文件的应用不记录，之后出现配置仍会导入。目标文件只读不写。
 
 | 应用 | 导入规则 |
 | --- | --- |
 | Claude Code | `env` 有 `ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_API_KEY` 时为 API 模式（Base URL 缺省为官方地址，`AUTH_TOKEN` 对应 Bearer，haiku 或旧 small/fast 路由对应小型／快速模型，sonnet / opus / fable 路由一并导入）；否则为官方登录。模型取 `ANTHROPIC_MODEL` 或 `model`，都没有时用 Claude Code 的 `default` 别名。有 `apiKeyHelper` 或 Bedrock / Vertex / Foundry 开关时不导入 |
 | Codex | 有 `model_provider` 时，对应表须有字面 `base_url` 与 `experimental_bearer_token`，且 `wire_api` 为 Responses，名称取表的 `name`；没有 `model_provider` 时为官方登录。上下文键一并导入。未设置 `model`、使用 `env_key` 或其他协议时不导入 |
-| Pi | `settings.json` 的 `defaultProvider` 与 `defaultModel` 导入为“沿用已有 Provider”，名称取 `models.json` 中的 `name`；本工具自己的 `miswitch_*` 条目不导入 |
+| Pi | `auth.json`、`models.json` 的 `providers`、`custom-providers.json` 三处出现的每个 Provider ID 都导入为“沿用已有 Provider”，名称为 ID；模型对默认 Provider 取 `defaultModel`，其他取已知的第一个模型（`models`、`modelOverrides`、扩展缓存 `models-store.json`），没有则留空。只在缓存中出现、没有配置的 ID 不导入；`miswitch_*`、`$schema` 不导入。已导入的同 ID 供应商只更新地址、协议与密钥来源（旧版“名称（ID）”形式的名称改为 ID）。指定 Pi 的导入（“从 Pi 重新读取”）报告新增数量 |
 
 导入结果先在内存中用 `patchProvider()` 写回一次：若管理字段指纹与当前文件相同，说明重新写入不会改变任何管理字段，直接记为当前 `active`（`hashes` 为当前原文）；否则只导入不标记。待决日志存在时不导入。
 
@@ -177,7 +180,7 @@ scripts/
 
 **略过相同备份。** 若本次各目标的 before 与该应用最新一份备份完全相同（按路径与原文计算摘要），不再写入新备份，避免反复切换到同一供应商挤掉保留配额中的不同历史；恢复日志照常写入。缓存中的摘要只用来提名候选：略过前重新读取并校验该候选，候选已变化、损坏或被删除时照常写入新备份。
 
-备份必须包含该应用当前的完整目标文件集合，否则视为损坏并跳过；只接受明确列出的旧版集合（Codex 仅含 `config.toml` 的备份，恢复时不触碰 `auth.json`）。部分文件集合的恢复会让 Pi 的 `defaultProvider` 指向不存在的 Provider，因此在任何写入前就拒绝。
+备份必须包含该应用当前的完整目标文件集合，否则视为损坏并跳过；只接受明确列出的旧版集合（Codex 仅含 `config.toml` 的备份，恢复时不触碰 `auth.json`；Pi 不含 `custom-providers.json` 的三文件备份，恢复时不触碰该文件）。部分文件集合的恢复会让 Pi 的 `defaultProvider` 指向不存在的 Provider，因此在任何写入前就拒绝。
 
 大小上限分两级：目标文件与 Hub 为 8 MiB（所有直接写 Hub 的操作——保存、删除、导入——都在替换前检查序列化后的大小，超出即拒绝并保留原 Hub）；备份与恢复日志聚合多份原文，上限 128 MiB。事务在写入任何文件前检查全部序列化输出：任一目标超过 8 MiB，或备份／日志超过 128 MiB，直接以静态错误停止，不修改任何文件。这样程序允许写出的内容都保证能被回读、回滚和恢复流程读取。恢复流程遇到无法读取的目标文件（超限、链接、非普通文件）一律视为冲突，不回退。
 
@@ -190,9 +193,10 @@ scripts/
 | Claude Code | `~/.claude/settings.json` | `env.ANTHROPIC_BASE_URL`、API Key 或 Bearer token、`env.ANTHROPIC_MODEL`、可选 `env.ANTHROPIC_DEFAULT_HAIKU_MODEL`、`model` | 保留 hooks、permissions 和其他 env；不写 `~/.claude.json` 或私有登录数据 |
 | Codex CLI | `~/.codex/config.toml` | 根 `model`、`model_provider`（官方模式移除）、可选上下文键和 `model_providers.custom` | 保留 MCP、projects、其他 Provider |
 | Codex CLI | `~/.codex/auth.json` | 不改写；只加锁、备份、校验，判断 `requires_openai_auth` | 登录、续期交给 Codex；恢复备份时一并恢复 |
-| Pi Coding Agent | `~/.pi/agent/models.json` | 唯一 Provider 的 `baseUrl`、`api`、`apiKey` 占位、`authHeader`、`models[].id` | 保留其他 Provider |
-| Pi Coding Agent | `~/.pi/agent/auth.json` | 唯一 Provider 的 `{type:"api_key",key}` | 保留非 MiSwitch 条目和其他 OAuth 登录 |
-| Pi Coding Agent | `~/.pi/agent/settings.json` | `defaultProvider`、`defaultModel` | 保留主题、thinking 等其他选项 |
+| Pi Coding Agent | `~/.pi/agent/models.json` | 未使用 pi-custom-providers 时，每个 Mi-Switch API 供应商一项：`name`、`baseUrl`、`api`、`apiKey` 占位、`authHeader`、`models[].id` | 保留用户的 Provider 与条目中的其他键（如 `modelOverrides`） |
+| Pi Coding Agent | `~/.pi/agent/custom-providers.json` | 使用 pi-custom-providers 时，每个 Mi-Switch API 供应商一项：`baseUrl`、`api` | 保留用户的中转站与条目中的其他键（如 `costMultiplier`）；文件不存在且无须写入时不创建 |
+| Pi Coding Agent | `~/.pi/agent/auth.json` | 每个 Mi-Switch API 供应商的 `{type:"api_key",key}` | 保留其他条目和 OAuth 登录 |
+| Pi Coding Agent | `~/.pi/agent/settings.json` | `defaultProvider`、`defaultModel` | 保留主题、`packages`、thinking 等其他选项 |
 
 目录解析依次使用相应的环境覆盖，再使用操作系统的 home：`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`PI_CODING_AGENT_DIR`。支持开头的 `~/` 展开，拒绝相对目录；不解析任意 shell 表达式。
 
@@ -244,7 +248,7 @@ experimental_bearer_token = "example-only-replace-me"
 
 `auth.json` 与 `config.toml` 一起作为目标文件加锁、备份、回读校验，但 Adapter 原样返回它，事务对未变化的条目不执行写入；恢复历史备份时会一并恢复当时的 `auth.json`。登录状态变化（登录或登出）会改变 `requires_openai_auth` 的应有值，因此计入漂移判定；Codex 自行刷新 token 只改变字节，不算漂移。容器内用 Codex 0.162.1 验证：无论 `auth.json` 是 API Key 登录还是 ChatGPT 登录、无论是否设置 `requires_openai_auth`，请求都带 `experimental_bearer_token` 的值，因此保留官方登录不会让官方凭据泄漏到第三方端点。
 
-Pi 的自定义 Provider ID 为 `miswitch_` + 去掉连字符的 UUID，避免覆盖官方内建 Provider；Codex 按 cc-switch 模板使用固定的 `custom`。切换时清理旧条目或旧 token，Hub 和备份仍保留对应历史。
+Pi 的 API 供应商使用用户填写的 Provider ID（旧版为 `miswitch_` + 去掉连字符的 UUID），不得与内建 Provider 重名，避免覆盖官方 OAuth；Codex 按 cc-switch 模板使用固定的 `custom`。Codex 切换时清理旧表或旧 token；Pi 的登记随供应商保存与删除，Hub 和备份仍保留对应历史。
 
 使用 TOML 解析器，不通过正则替换。根 `profile` 选择器会被移除，`profiles` 表保留；否则所选 profile 可能覆盖根级模型和 Provider。用户再次以 `--profile` 或 CLI `-c` 启动，仍可能覆盖本次选择。检测到登录方式 / workspace 限制时停止，避免静默修改策略。
 
@@ -258,12 +262,28 @@ Pi 的自定义 Provider ID 为 `miswitch_` + 去掉连字符的 UUID，避免�
 
 #### Pi Coding Agent
 
-`models.json`：
+Pi 同时保存多个 Provider，`settings.json` 的 `defaultProvider`／`defaultModel` 只是启动时的默认选择，`/model` 能看到全部（[providers.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/providers.md)、[models.md](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/models.md)）。密钥的解析顺序为 `--api-key` → `auth.json` → `models.json` 的 `apiKey` → 环境变量。第三方扩展 [pi-custom-providers](https://www.npmjs.com/package/pi-custom-providers)（MIT）在 `custom-providers.json` 中定义中转站，只写 `baseUrl` 与 `api`，密钥同样取自 `auth.json`；启动时请求中转站的 `/v1/models` 登记模型，并缓存到 `models-store.json`。
+
+Mi-Switch 的两种 Pi 供应商：
+
+- **沿用 Pi 已有的 Provider**（登录模式）：指向 Pi 中已经存在的 ID，导入得到的都是这一类。切换只写 `defaultProvider` 与 `defaultModel`（模型留空时删除 `defaultModel`），不碰该 Provider 的定义与凭据。
+- **API Key**：Mi-Switch 自己的 Provider。保存时就登记到 Pi（与 Hub 同一事务、先备份），删除供应商时移除登记，所以所有 Mi-Switch 供应商都与用户的 Provider 并存，在 Pi 的 `/model` 中可选。使用 pi-custom-providers（`custom-providers.json` 存在，或 `settings.packages` 含该扩展）时写入 `custom-providers.json`，否则写入 `models.json`；密钥都写入 `auth.json`。切换只改默认选择，并按 Provider 当前设置重写它自己的条目。旧版的 `miswitch_*` 条目仍可切换；切换时清理 Hub 中已不存在的 `miswitch_*` 条目。
+
+`custom-providers.json`（使用扩展时）：
+
+```json
+{
+  "my-relay": { "baseUrl": "https://gateway.example/v1", "api": "openai-responses" }
+}
+```
+
+`models.json`（未使用扩展时）：
 
 ```json
 {
   "providers": {
-    "miswitch_30000000000040008000000000000003": {
+    "my-relay": {
+      "name": "工作网关",
       "baseUrl": "https://gateway.example/v1",
       "api": "openai-completions",
       "apiKey": "managed-by-miswitch:auth.json",
@@ -278,10 +298,7 @@ Pi 的自定义 Provider ID 为 `miswitch_` + 去掉连字符的 UUID，避免�
 
 ```json
 {
-  "miswitch_30000000000040008000000000000003": {
-    "type": "api_key",
-    "key": "example-only-replace-me"
-  }
+  "my-relay": { "type": "api_key", "key": "example-only-replace-me" }
 }
 ```
 
@@ -289,20 +306,22 @@ Pi 的自定义 Provider ID 为 `miswitch_` + 去掉连字符的 UUID，避免�
 
 ```json
 {
-  "defaultProvider": "miswitch_30000000000040008000000000000003",
+  "defaultProvider": "my-relay",
   "defaultModel": "your-model-id"
 }
 ```
 
-每组 API 配置使用独立 Provider ID，防止内建 `openai` / `anthropic` 的 OAuth 凭据优先覆盖自定义密钥。只写当前选中的 MiSwitch 条目，不把所有供应商密钥铺到 Pi 的配置中。
+每组 API 配置使用独立 Provider ID，防止内建 `openai` / `anthropic` 的 OAuth 凭据优先覆盖自定义密钥。ID 在保存时校验：不得与 Pi 内置 Provider（取自 providers.md）、用户在三个文件中已有的条目或另一个 Mi-Switch 供应商重名；在 Pi 文件锁内再查一次。
 
-`models.json` 中的 `apiKey` 是固定占位字面量：Pi 0.73 在自定义 Provider 缺少 `apiKey` 时拒绝加载整个 `models.json`，但发送请求时优先使用 `auth.json` 中同名条目的密钥（`model-registry.js` 的 `getApiKeyAndHeaders`）。真实密钥只写入 `auth.json`。该行为已由容器内真实 CLI 测试验证。
+`models.json` 中的 `apiKey` 是固定占位字面量：Pi 0.73 在自定义 Provider 缺少 `apiKey` 时拒绝加载整个 `models.json`，但发送请求时优先使用 `auth.json` 中同名条目的密钥（`model-registry.js` 的 `getApiKeyAndHeaders`）。真实密钥只写入 `auth.json`。Pi 1.0.4 下该写法同样由容器内真实 CLI 测试验证。
+
+**规则集 3。** 只改变 Pi 的判定：指纹只包含 `defaultProvider`、`defaultModel` 与所选 Provider 自己的条目（Mi-Switch API 供应商为它在 `models.json`／`custom-providers.json`／`auth.json` 中的管理字段，沿用已有 Provider 时只看该 ID 是否仍有定义与登录类型），其他 Provider 的增删改不算漂移；API 模式的 `definition` 改用 Pi Provider ID 并加入名称（写入 `models.json` 的 `name`）。规则集 2 的 Pi 记录保留原规则判定，重新应用后改用规则集 3。
 
 `api` 允许 `openai-completions`、`openai-responses`、`anthropic-messages`。模型仅设置官方 Schema 必需的 `id`，可选的 context、token limit、cost 不伪造；有特别兼容要求的供应商需要后续增加经过验证的能力字段。
 
 Base URL 约定按 Pi 各客户端行为而定：`anthropic-messages` 会在 Base URL 后追加 `/v1/messages`，所以填写不带 `/v1` 的地址；两种 OpenAI 协议使用 SDK 的 `/v1` 约定，需要带 `/v1`。`authHeader: true` 使 Pi 在 Anthropic 协议下同时发送 `x-api-key` 与 `Authorization: Bearer`，容器测试确认两者均带正确密钥，兼容只接受其中一种的网关。
 
-Pi 支持配置值表达式，包括环境插值和命令；本 UI 只收字面 API Key，拒绝会触发表达式的前缀。登录模式（界面称“沿用 Pi 已有的 Provider”）指定一个已存在的 Provider ID：`auth.json` 中有该条目（OAuth 或 Pi 自己保存的 API Key），或 `models.json` 中定义了它（只认文件自身的条目；`__proto__`、`constructor` 这类继承属性名不算存在）。切换时只写 `defaultProvider` 与 `defaultModel`，该 Provider 的定义、覆盖项和凭据原样保留。找不到时拒绝切换。
+Pi 支持配置值表达式，包括环境插值和命令；本 UI 只收字面 API Key，拒绝会触发表达式的前缀。登录模式（界面称“沿用 Pi 已有的 Provider”）指定一个已存在的 Provider ID：`auth.json` 中有该条目（OAuth 或 Pi 自己保存的 API Key），或 `models.json`、`custom-providers.json` 中定义了它（只认文件自身的条目；`__proto__`、`constructor` 这类继承属性名不算存在）。切换时只写 `defaultProvider` 与 `defaultModel`，该 Provider 的定义、覆盖项和凭据原样保留。找不到时拒绝切换。编辑器的“从 Pi 的模型清单选择”列出 Pi 已知的模型（`models`、`modelOverrides`、扩展缓存），只读本机文件，不发网络请求。
 
 Pi 的 `/model` 可重载模型配置，但启动默认值不等于已有会话立刻切换模型。恢复已有会话可能取回记录中的 Provider / Model。
 
@@ -358,7 +377,7 @@ JSON/TOML 读取、备份失败都发生在目标覆写前。多文件写入中�
 
 若任一文件已被第三方修改（既不是 before 也不是 after），`snapshot()` 仍正常返回，并在 `pending` 字段列出日志 ID、应用与冲突文件；所有写入操作（保存、删除、切换、恢复、保存全局设置）在此期间被拒绝，菜单栏中的供应商也会停用。界面在顶部横幅列出冲突文件，提供“核对后放弃并回退”：仅回退仍等于本次 after 的文件，被外部修改的文件原样保留，然后删除 `pending.json`。`pending.json` 自身无法解析时同样报告，并允许以其内容 SHA-256 作为确认 ID 直接丢弃；切换前的备份始终保留在历史备份中。没有强制覆盖外部修改的功能。
 
-这是有日志的多文件事务，**不声称跨多个文件存在操作系统级原子提交**。另一 CLI 在写入间隙读取仍可能看到中间状态；最好先暂停目标会话。单文件原子 rename 避免读到半段 JSON，但并不能把三个 Pi 文件变成同时提交。
+这是有日志的多文件事务，**不声称跨多个文件存在操作系统级原子提交**。另一 CLI 在写入间隙读取仍可能看到中间状态；最好先暂停目标会话。单文件原子 rename 避免读到半段 JSON，但并不能把四个 Pi 文件变成同时提交。
 
 ### 2.3 前端组件与调用边界
 
@@ -471,7 +490,7 @@ interface Bridge {
 | MCP、权限、Hooks 丢失 | JSON/TOML 解析后仅修改约定字段，不用完整模板覆盖整个文件。`~/.claude.json` 保持由 Claude Code 管理。 |
 | 文件格式损坏 | 拒绝覆写，提示修复；不能把 parse 异常直接展示，可能泄漏密钥。 |
 | 同一配置被多进程写入 | 单实例 + Hub 锁 + 目标锁；非合作写入再做内容比较。不能消除比较与 rename 间的极小竞争窗口；CLI 最好暂停。 |
-| Pi 多文件提交不原子 | 有 journal、逆序回滚和启动恢复；不承诺目标读取进程能同时看到三份更新。 |
+| Pi 多文件提交不原子 | 有 journal、逆序回滚和启动恢复；不承诺目标读取进程能同时看到多份更新。 |
 | 同步工具产生符号链接 | 明确拒绝；使用实际目录。若未来支持链接，必须重新设计路径白名单与原子操作，不能默认跟随。 |
 | Windows 文件占用 | 可能使 rename 失败；保留备份并回滚，释放目标占用后重试；没有杀进程或需要管理员的自动行为。 |
 | 权限与 ACL | POSIX 新写文件 `0600`；现有文件的 mode/ACL/xattrs 不保证随替换原样保留。Windows 需独立验证目录 ACL。 |
@@ -486,7 +505,7 @@ interface Bridge {
 
 已经验证核心逻辑、真实文件读写和实际 Electron 窗口 / preload IPC / React 表单流程。所有测试使用临时路径与合成密钥。
 
-`npm run test:container`（`tests/container/`）在 Docker 内安装固定版本的 Claude Code 2.1.296、Codex CLI 0.162.1、Pi 0.73.1，用 `Manager` 写入配置后以 `claude -p`、`codex exec`、`pi -p` 请求容器内的模拟 API（`mock-server.mjs`，支持三种协议的流式与非流式响应），断言实际请求的路径、鉴权头与模型。2026-10-12 结果：Claude x-api-key、Bearer 与 haiku 别名走小型／快速模型（主对话请求，未触发后台任务），Codex `experimental_bearer_token` 与保留官方 `auth.json`，Pi `openai-completions` 与 `anthropic-messages`，共 7 项通过。附加实验：`experimental_bearer_token` 在 `auth.json` 为 API Key 登录或 ChatGPT 登录、`requires_openai_auth` 设或不设的四种组合下都优先生效；`http_headers` 也可行但未采用。
+`npm run test:container`（`tests/container/`）在 Docker 内安装固定版本的 Claude Code 2.1.296、Codex CLI 0.162.1、Pi 1.0.4（`@earendil-works/pi-coding-agent`，另装 pi-custom-providers 0.4.3），用 `Manager` 写入配置后以 `claude -p`、`codex exec`、`pi -p` 请求容器内的模拟 API（`mock-server.mjs`，支持三种协议的流式与非流式响应），断言实际请求的路径、鉴权头与模型。2026-10-12 结果：Claude x-api-key、Bearer 与 haiku 别名走小型／快速模型（主对话请求，未触发后台任务），Codex `experimental_bearer_token` 与保留官方 `auth.json`，Pi `openai-completions` 与 `anthropic-messages`，共 7 项通过。2026-10-13 起 Pi 改用 1.0.4：`models.json` 的两项照常通过；新增“Mi-Switch 中转站写入 `custom-providers.json`”（扩展先以 `auth.json` 的密钥请求 `/v1/models`，再以同一密钥请求 `/v1/responses`）与“选择用户已有的中转站”两项，每项都在运行后检查其他 Provider 的条目仍在，共 9 项通过。附加实验：`experimental_bearer_token` 在 `auth.json` 为 API Key 登录或 ChatGPT 登录、`requires_openai_auth` 设或不设的四种组合下都优先生效；`http_headers` 也可行但未采用。
 
 没有用真实密钥请求供应商，也没有修改真实 CLI 配置或验证真实账号；Windows/Linux 安装运行、完整 CLI 协议联调、Developer ID 签名/公证与客户端版本矩阵需在发布前进行。macOS arm64 dmg 已用 `npm run package` 生成（ad-hoc 签名，关闭 hardened runtime，因为它只在公证时需要，且 ad-hoc 签名下可能因库验证导致无法启动），并以临时 HOME 与 user-data 目录启动打包版验证：页面从 `app.asar` 载入，IPC 来源比对在含空白、中文与 `#` 的路径下通过。当前没有将一个运行中的 OAuth 会话强制切为其他账号的能力。
 

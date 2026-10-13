@@ -17,10 +17,14 @@ const presetMark = (app: AppId, p: Preset) => {
   return autoIcon({ app, mode: f?.mode ?? 'api', baseUrl: f?.baseUrl ?? '', loginProvider: f?.loginProvider ?? 'anthropic' });
 };
 
-export function ProviderEditor({ app, provider, inUse, busy, error, onCancel, onSave, onRemove, listModels, configView }: {
+// A Pi provider ID suggested for a new Mi-Switch provider: the preset's name with `-relay`, which keeps clear of
+// Pi's built-in provider names (a relay named `deepseek` would shadow the built-in DeepSeek provider).
+const suggestPiId = (preset: Preset | null) => preset ? `${preset.id}-relay` : 'my-relay';
+
+export function ProviderEditor({ app, provider, inUse, busy, error, piRelays, onCancel, onSave, onRemove, listModels, piModels, configView }: {
   app: AppId; provider?: PublicProvider; inUse: boolean; busy: boolean; error: string;
   onCancel(): void; onSave(input: ProviderInput, options: { activate: boolean }): void; onRemove(): void;
-  listModels(request: ModelListRequest): Promise<ModelList>; configView(request: ConfigViewRequest): Promise<ConfigView>;
+  piRelays: boolean; listModels(request: ModelListRequest): Promise<ModelList>; piModels(id: string): Promise<string[]>; configView(request: ConfigViewRequest): Promise<ConfigView>;
 }) {
   const [mode, setMode] = useState<'api' | 'login'>(provider?.mode ?? 'api');
   const [preset, setPreset] = useState<Preset | null>(null);
@@ -43,6 +47,8 @@ export function ProviderEditor({ app, provider, inUse, busy, error, onCancel, on
   const presets = presetsFor(app).filter(p => presetMatches(p, query));
   const auto = autoIcon({ app, mode, baseUrl: look.baseUrl, loginProvider: look.loginProvider });
   const shownIcon = icon === 'letter' ? null : icon || auto;
+  // An existing Pi provider may leave the model to Pi.
+  const piExisting = app === 'pi' && mode === 'login';
 
   const readDraft = (): ConfigDraft => {
     if (!form.current) return { mode };
@@ -68,6 +74,9 @@ export function ProviderEditor({ app, provider, inUse, busy, error, onCancel, on
       setMode(fields.mode ?? 'api');
       for (const key of presetInputs) { const input = field(key); if (input) input.value = String(fields[key] ?? (key === 'protocol' ? input.value : '')); }
     }
+    // The suggested Pi provider ID follows the preset until the user types their own.
+    const piField = field('piProviderId');
+    if (piField && !provider && piField.value === suggestPiId(preset)) piField.value = suggestPiId(next);
     setPreset(next); setModels(null); setModelStatus(null);
     changed();
   };
@@ -78,6 +87,16 @@ export function ProviderEditor({ app, provider, inUse, busy, error, onCancel, on
         protocol: (field('protocol')?.value ?? 'anthropic-messages') as ModelListRequest['protocol'], claudeAuth: (field('claudeAuth')?.value ?? 'api-key') as 'api-key' | 'bearer' });
       setModels(result.models); setModelFilter('');
       setModelStatus({ text: `共 ${result.models.length} 个模型，点一个填入“默认 Model”`, error: false });
+    } catch (e) { setModels(null); setModelStatus({ text: errorText(e), error: true }); }
+    finally { setFetching(false); }
+  };
+  // An existing Pi provider: the models Pi already knows for it (models.json and the extension's model cache).
+  const fetchPiModels = async () => {
+    setFetching(true); setModelStatus(null);
+    try {
+      const ids = await piModels(field('loginProvider')?.value ?? '');
+      setModels(ids.length ? ids : null); setModelFilter('');
+      setModelStatus(ids.length ? { text: `Pi 记录了 ${ids.length} 个模型，点一个填入`, error: false } : { text: 'Pi 没有记录这个 Provider 的模型；可以手动填写，或留空由 Pi 自动选择', error: false });
     } catch (e) { setModels(null); setModelStatus({ text: errorText(e), error: true }); }
     finally { setFetching(false); }
   };
@@ -93,6 +112,9 @@ export function ProviderEditor({ app, provider, inUse, busy, error, onCancel, on
       claudeAuth: String(data.get('claudeAuth') ?? 'api-key') as 'api-key' | 'bearer',
       loginProvider: String(data.get('loginProvider') ?? 'anthropic'),
       notes: String(data.get('notes')), apiKey: String(data.get('apiKey') ?? '') || undefined, icon: icon || undefined,
+      piProviderId: app === 'pi' && mode === 'api' ? text('piProviderId') : undefined,
+      // Display fields recorded on import stay with the provider.
+      piAuth: app === 'pi' && mode === 'login' ? provider?.piAuth : undefined,
       smallFastModel: text('smallFastModel'), sonnetModel: text('sonnetModel'), opusModel: text('opusModel'), fableModel: text('fableModel'),
       reasoningEffort: text('reasoningEffort') as ProviderInput['reasoningEffort'],
       contextWindow: Number(data.get('contextWindow')) || undefined, autoCompactTokenLimit: Number(data.get('autoCompactTokenLimit')) || undefined },
@@ -167,9 +189,12 @@ export function ProviderEditor({ app, provider, inUse, busy, error, onCancel, on
               {app === 'claude' ? <label>鉴权方式<select name="claudeAuth" defaultValue={provider?.claudeAuth}><option value="api-key">X-Api-Key（官方 API）</option><option value="bearer">Bearer Token（网关）</option></select></label> : null}
             </div>
             {app === 'pi' ? <p className="hint">Anthropic 协议的 Base URL 不带 /v1（Pi 会自行追加）；OpenAI 协议需要带 /v1。</p> : null}
+            {app === 'pi' ? <label>Pi Provider ID<input name="piProviderId" className="mono" pattern="[A-Za-z0-9_\-]+" maxLength={64} required={!provider}
+              defaultValue={provider ? provider.piProviderId ?? '' : suggestPiId(null)} placeholder={provider ? '留空沿用旧的 miswitch_ 名称' : 'my-relay'} /></label> : null}
+            {app === 'pi' ? <p className="hint">保存后即登记到 Pi：{piRelays ? '地址写入 custom-providers.json（pi-custom-providers），' : '地址写入 models.json，'}密钥写入 auth.json。Pi 的 /model 能看到所有登记的供应商；切换只改变默认选择。ID 不能与 Pi 已有的或内置的 Provider 重名。</p> : null}
           </fieldset>
-          {mode === 'login' && app === 'pi' ? <label>Pi Provider ID<input name="loginProvider" className="mono" required defaultValue={provider?.loginProvider ?? 'anthropic'} placeholder="/login 保存的，或 models.json 中定义的 ID" /></label> : null}
-          {mode === 'login' ? <p className="hint">{app === 'pi' ? '只切换 Pi 的默认 Provider 和模型，不改动它本身的定义与凭据。' : '使用目标 CLI 自己的登录。请先在 CLI 中登录。'}</p> : null}
+          {mode === 'login' && app === 'pi' ? <label>Pi Provider ID<input name="loginProvider" className="mono" required defaultValue={provider?.loginProvider ?? 'anthropic'} placeholder="/login 保存的，或 models.json、custom-providers.json 中定义的 ID" /></label> : null}
+          {mode === 'login' ? <p className="hint">{app === 'pi' ? '这个 Provider 的地址和密钥由 Pi 自己管理（auth.json、models.json 或 custom-providers.json）；Mi-Switch 只切换 Pi 的默认 Provider 和模型。' : '使用目标 CLI 自己的登录。请先在 CLI 中登录。'}</p> : null}
         </div>
       </section>
 
@@ -177,9 +202,10 @@ export function ProviderEditor({ app, provider, inUse, busy, error, onCancel, on
         <div className="sec-head"><h2 id="model-title">模型</h2></div>
         <div className="panel form">
           <div className="field">
-            <div className="field-head"><label htmlFor="model">默认 Model</label>
-              {mode === 'api' ? <button type="button" className="link" disabled={fetching || busy} onClick={() => void fetchModels()}>{fetching ? '获取中…' : '从供应商获取'}</button> : null}</div>
-            <input id="model" name="model" className="mono" required maxLength={200} defaultValue={provider?.model} placeholder="供应商支持的模型 ID" />
+            <div className="field-head"><label htmlFor="model">默认 Model{piExisting ? '（可留空）' : ''}</label>
+              {mode === 'api' ? <button type="button" className="link" disabled={fetching || busy} onClick={() => void fetchModels()}>{fetching ? '获取中…' : '从供应商获取'}</button>
+                : piExisting ? <button type="button" className="link" disabled={fetching || busy} onClick={() => void fetchPiModels()}>{fetching ? '读取中…' : '从 Pi 的模型清单选择'}</button> : null}</div>
+            <input id="model" name="model" className="mono" required={!piExisting} maxLength={200} defaultValue={provider?.model} placeholder={piExisting ? '留空则由 Pi 自动选择' : '供应商支持的模型 ID'} />
             {modelStatus ? <p className={modelStatus.error ? 'error' : 'hint'} role={modelStatus.error ? 'alert' : 'status'}>{modelStatus.text}</p> : null}
             {models ? <div className="model-picker">
               <input type="search" aria-label="筛选模型" placeholder={`筛选 ${models.length} 个模型`} value={modelFilter} onChange={e => setModelFilter(e.target.value)} />
